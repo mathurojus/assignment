@@ -51,9 +51,22 @@ type State = {
   exchanges: number
 }
 
-function resolveAuthor(): string {
+/**
+ * Author precedence: AGENT_CAPTURE_AUTHOR env var, then .agent-capture.json in
+ * the project root, then git config user.name. The env var is a property of the
+ * server process, so changing it needs `opencode service restart`; the JSON file
+ * is picked up on the next plugin reload and ships with the repo.
+ */
+function resolveAuthor(projectDir: string): string {
   const fromEnv = process.env.AGENT_CAPTURE_AUTHOR
   if (fromEnv && fromEnv.trim()) return fromEnv.trim()
+  try {
+    const cfg = join(projectDir, ".agent-capture.json")
+    if (existsSync(cfg)) {
+      const parsed = JSON.parse(readFileSync(cfg, "utf8"))
+      if (typeof parsed?.author === "string" && parsed.author.trim()) return parsed.author.trim()
+    }
+  } catch {}
   try {
     const name = execFileSync("git", ["config", "user.name"], { encoding: "utf8" }).trim()
     if (name) return name
@@ -132,7 +145,7 @@ export default {
     mkdirSync(logDir, { recursive: true })
     mkdirSync(stateDir, { recursive: true })
 
-    const author = resolveAuthor()
+    const author = resolveAuthor(projectDir)
     const project = basename(projectDir)
     const states = new Map<string, State>()
 
@@ -212,6 +225,10 @@ export default {
     }
 
     const persist = (state: State) => {
+      // The author is session metadata, not entry content, so it tracks the
+      // currently configured handle. Entry bodies are never touched.
+      state.author = author
+
       // Sidecar first: if rendering throws, the transcript state is still safe.
       const sp = sidecar(state.sessionID)
       const stmp = `${sp}.tmp`
@@ -279,7 +296,10 @@ export default {
           if (type !== "session.text.ended" && type !== "session.step.ended") continue
           const sessionID = event?.data?.sessionID
           if (!sessionID) continue
-          const state = states.get(sessionID)
+          // load(), not states.get(): editing this file hot-reloads the plugin and
+          // empties the in-memory map, so an in-flight turn must be restored from
+          // the sidecar or its response would be dropped.
+          const state = load(sessionID)
           if (!state || !state.awaiting) continue
 
           if (type === "session.text.ended") {
