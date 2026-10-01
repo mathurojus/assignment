@@ -1,0 +1,11 @@
+# Dependencies
+node_modules/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.log
+
+# NOTE: .agent-logs/ is intentionally NOT ignored.
+# The 8x assignment requires the capture logs to be committed and to ship
+# with the repository as part of the submission.
