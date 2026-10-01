@@ -201,6 +201,24 @@ immediately afterwards; exchanges from 2 onward rejoin the blocks with a blank l
     dropped that turn's response. Found by reading the code immediately before making an edit that
     would have triggered it, and fixed first. Capture has to survive the act of editing the
     capture code, or it is not really automatic.
+11. **Capture fabricated a response for a turn the user steered.** I sent two messages 15 seconds
+    apart, so the second was admitted while the first turn was still running. An earlier version
+    treated "a prompt arrived and the previous one has no response yet" as "the previous turn
+    died", and wrote `[no response captured - the turn ended without a final assistant message]`
+    for a turn that then succeeded — and filed the real response under the wrong exchange number.
+    Two failures from one bad assumption: a fabricated entry, and a misattributed one. Fixed by
+    deleting the placeholder entirely (a prompt with no response is already self-evident in the
+    log, whereas a fabricated one hides the real state) and binding each response to the most
+    recent prompt that has no response yet. Binding to the *most recent* rather than the
+    earliest also stops a genuinely dead turn's leftover prompt from stealing the next turn's
+    response.
+    Exchange 2 keeps the fabricated entry, as captured.
+12. **I misread a truncated log slice and reported a prompt entry as mutated.** It had not been.
+    The log is long and I read a 900-character window across an entry boundary. I checked the
+    sidecar before concluding anything, which is what caught it — the sidecar and the file
+    agreed, so the entry was intact. Recorded because the near-miss is the reason the sidecar
+    exists: it is an independent record of the same entries, so a disagreement between file and
+    memory is detectable rather than a matter of trust.
 
 ## 5. Known gaps, not papered over
 
@@ -208,12 +226,16 @@ immediately afterwards; exchanges from 2 onward rejoin the blocks with a blank l
   throwaway discovery plugin was still loaded, before `agent-capture` existed. I could reconstruct
   them from the on-disk transcript, but hand-writing log entries is exactly what you said not to
   do, so the gap stays. That log file records exchanges 1 onward from the third message.
-- **Canary sessions have a PROMPT with no RESPONSE.** Honest, not a bug: those turns never
-  completed. Explicit handling now prevents a prompt dangling forever — if a new prompt arrives
-  while a response is pending, the previous exchange is closed with
-  `[no response captured - the turn ended without a final assistant message]`.
-- **A dead turn is indistinguishable from a turn still running** in the event stream, which is why
-  that fix is driven by the next prompt rather than by an error event.
+- **A prompt with no response, when the turn genuinely died.** There is no event that means
+  "turn aborted" — a turn that fails upstream emits no `session.step.ended` at all, which is
+  indistinguishable from a turn that is still running. So the log shows a bare `PROMPT` with
+  nothing after it. I tried closing those out automatically and it was worse than the problem:
+  see §4.11, where it fabricated an entry for a turn that in fact succeeded.
+- **Exchange 2 contains a fabricated response**, a casualty of the above, left in place as
+  captured.
+- **A turn can serve two prompts.** If you steer mid-turn, both prompts are logged and the single
+  response binds to the most recent one. The earlier prompt keeps no response. That is honest
+  about what happened, but it does mean the log is pairs-or-singletons, not strictly pairs.
 - **Canaries 1–8 record `author: Ojus Mathur`**, the `git config user.name` fallback, because they
   were captured before the handle was known. Canary 10 and later record `mathurojus`. The earlier
   files were not retro-edited.
