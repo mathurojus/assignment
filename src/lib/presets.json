@@ -1,0 +1,119 @@
+{
+  "_comment": [
+    "Camera-motion presets. Adding one = appending one object here. No code",
+    "change, no migration. Validated by zod at import (src/lib/presets.ts), so a",
+    "malformed entry fails at boot rather than silently vanishing from the picker.",
+    "",
+    "`accent` drives the thumbnail gradient so the repo carries no binary assets."
+  ],
+  "presets": [
+    {
+      "slug": "dolly-in",
+      "name": "Dolly In",
+      "category": "Push",
+      "description": "Slow forward push. Perspective compresses as the subject grows in frame.",
+      "promptFragment": "slow dolly push-in on the subject, steadily deepening perspective compression",
+      "negativeFragment": "static locked-off camera, digital zoom",
+      "accent": "#7c5cff"
+    },
+    {
+      "slug": "dolly-out",
+      "name": "Dolly Out",
+      "category": "Pull",
+      "description": "Slow pull-back that reveals the environment around the subject.",
+      "promptFragment": "slow dolly pull-back, revealing the surrounding environment, subject receding into depth",
+      "negativeFragment": "static camera, sudden zoom",
+      "accent": "#5c8cff"
+    },
+    {
+      "slug": "crash-zoom",
+      "name": "Crash Zoom",
+      "category": "Lens",
+      "description": "Fast dolly-in with a zoom lens, ending locked on the subject.",
+      "promptFragment": "aggressive crash zoom whip into the subject, rapid dolly with zoom lens, settling hard on focus",
+      "negativeFragment": "slow drift, static camera",
+      "accent": "#ff5c7c"
+    },
+    {
+      "slug": "orbit",
+      "name": "Orbit",
+      "category": "Rotate",
+      "description": "Camera arcs around a stationary subject, revealing its form in relief.",
+      "promptFragment": "smooth orbital arc around the subject, revealing its three-dimensional form, consistent radius",
+      "negativeFragment": "linear dolly, subject rotation",
+      "accent": "#2dd4bf"
+    },
+    {
+      "slug": "fpv-drone",
+      "name": "FPV Drone",
+      "category": "Move",
+      "description": "First-person drone flight with banking turns and roll into frame.",
+      "promptFragment": "immersive first-person drone flight, banking roll through the scene, fast agile FPV movement with motion blur",
+      "negativeFragment": "static tripod shot, smooth gimbal steadiness",
+      "accent": "#f59e0b"
+    },
+    {
+      "slug": "handheld",
+      "name": "Handheld",
+      "category": "Move",
+      "description": "Loose human operator grip. Subtle float, breathing micro-movement.",
+      "promptFragment": "shot handheld by an operator, subtle organic float and breathing micro-movement, imperfect human framing",
+      "negativeFragment": "tripod, locked gimbal, mechanical smoothness",
+      "accent": "#a3a3a3"
+    },
+    {
+      "slug": "tracking-shot",
+      "name": "Tracking Shot",
+      "category": "Move",
+      "description": "Camera and subject move together, locked on one point through the frame.",
+      "promptFragment": "lateral tracking shot following the subject at constant distance, locked framing throughout, background parallax sliding past",
+      "negativeFragment": "static camera, subject leaving frame",
+      "accent": "#38bdf8"
+    },
+    {
+      "slug": "rack-focus",
+      "name": "Rack Focus",
+      "category": "Lens",
+      "description": "Focus pulls from foreground to background, holding both planes readable.",
+      "promptFragment": "shallow depth of field with a deliberate rack focus pulling from the foreground plane to the background subject, focus pull mid-shot",
+      "negativeFragment": "deep focus throughout, flat depth",
+      "accent": "#c084fc"
+    },
+    {
+      "slug": "whip-pan",
+      "name": "Whip Pan",
+      "category": "Move",
+      "description": "Fast rotational whip between two subjects, heavy motion blur.",
+      "promptFragment": "whip pan rotating fast between two subjects, streaking horizontal motion blur, fast rotational camera movement",
+      "negativeFragment": "slow pan, static shot",
+      "accent": "#fb7185"
+    },
+    {
+      "slug": "crane-up",
+      "name": "Crane Up",
+      "category": "Lift",
+      "description": "Camera rises vertically, opening the frame from intimate to wide.",
+      "promptFragment": "vertical crane shot rising smoothly, revealing the full scene from an intimate framing to a wide establishing view",
+      "negativeFragment": "tilt up only, static camera",
+      "accent": "#34d399"
+    },
+    {
+      "slug": "bullet-time",
+      "name": "Bullet Time",
+      "category": "Move",
+      "description": "Time nearly stops; camera arcs around a frozen subject mid-motion.",
+      "promptFragment": "bullet-time shot, motion nearly frozen mid-action, camera arcing smoothly around the subject at high frame rate",
+      "negativeFragment": "fast motion blur, real-time motion",
+      "accent": "#22d3ee"
+    },
+    {
+      "slug": "static-lockoff",
+      "name": "Static Lock-Off",
+      "category": "Static",
+      "description": "Locked tripod frame. All movement comes from the subject and lighting.",
+      "promptFragment": "locked-off tripod framing, entirely static camera, all motion occurring within the frame from the subject and shifting light",
+      "negativeFragment": "camera movement, drift, handheld shake",
+      "accent": "#64748b"
+    }
+  ]
+}

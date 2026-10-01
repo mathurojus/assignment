@@ -1,10 +1,33 @@
-# Dependencies
+# --- Dependencies / build output -------------------------------------------
 node_modules/
+.next/
+out/
+build/
+coverage/
+.playwright-report/
+test-results/
+.vercel/
 
-# OS / editor noise
+# --- Secrets -----------------------------------------------------------------
+# Real env files must never be committed. .env.example is documentation and IS
+# committed -- the negation is required because the `.env*` glob would swallow it.
+.env
+.env.*
+!.env.example
+
+# --- OS / editor noise -------------------------------------------------------
 .DS_Store
 Thumbs.db
 *.log
+
+# --- Local storage volume ----------------------------------------------------
+# Generated media lives outside the repo so a `git status` never wanders into a
+# 200MB video. Deploys set STORAGE_DRIVER=supabase and this path is unused.
+/storage/local/
+
+# --- Typescript --------------------------------------------------------------
+*.tsbuildinfo
+next-env.d.ts
 
 # NOTE: .agent-logs/ is intentionally NOT ignored.
 # The 8x assignment requires the capture logs to be committed and to ship
