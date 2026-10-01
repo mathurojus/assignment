@@ -254,26 +254,15 @@ export default {
       const state = load(sessionID) ?? create(sessionID)
       const now = new Date().toISOString()
 
-      // A prompt arriving while the previous one is still unanswered means that
-      // turn ended without a final assistant message (aborted, or the provider
-      // errored out). Close it out explicitly so the log stays self-consistent
-      // instead of leaving a prompt dangling forever.
-      if (state.awaiting) {
-        const previous = state.entries[state.entries.length - 1]
-        if (previous?.type === "PROMPT") {
-          state.entries.push({
-            type: "RESPONSE",
-            num: previous.num,
-            timestamp: now,
-            model: previous.model,
-            text: "[no response captured - the turn ended without a final assistant message]",
-          })
-        }
-      }
-
+      // Deliberately NOT closing out a previous unanswered prompt here. A prompt
+      // can arrive while a turn is still running (the user steering), and a steer
+      // is indistinguishable from a dead turn at this point. An earlier version
+      // assumed "unanswered" meant "dead" and fabricated
+      // "[no response captured ...]" for a turn that then succeeded, and filed the
+      // real response under the wrong exchange number. A prompt with no response is
+      // self-evident in the log; a fabricated one is not.
       state.exchanges += 1
       state.lastPromptAt = now
-      state.buffer = []
       state.awaiting = true
       state.entries.push({
         type: "PROMPT",
@@ -338,9 +327,25 @@ export default {
           const text = blocks.join("\n\n")
           if (model !== "unknown") cachedModel = model
 
+          // Attribute the response to the most recent prompt that has no response
+          // yet, rather than to "the current exchange counter". Those differ once
+          // the user steers mid-turn: two prompts, one turn. Taking the latest
+          // open prompt also stops a dead turn's leftover prompt from stealing the
+          // next turn's response.
+          let num = state.exchanges
+          for (let i = state.entries.length - 1; i >= 0; i--) {
+            const entry: any = state.entries[i]
+            if (entry.type !== "PROMPT") continue
+            const answered = state.entries.some((r: any) => r.type === "RESPONSE" && r.num === entry.num)
+            if (!answered) {
+              num = entry.num
+              break
+            }
+          }
+
           state.entries.push({
             type: "RESPONSE",
-            num: state.exchanges,
+            num,
             timestamp: new Date().toISOString(),
             model,
             text,
