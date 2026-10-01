@@ -29,6 +29,16 @@ export interface StoredObject {
 export interface PutOptions {
   contentType: string;
   kind: StorageKind;
+  /**
+   * Force a specific extension, used by the upload route.
+   *
+   * Optional because generated output derives its extension from the content type
+   * the upstream API told us, and that derivation is already correct. The upload
+   * route needs this because it must distinguish a user-supplied name from the
+   * validated MIME type — and it is an override rather than a fourth argument
+   * precisely so the generated path cannot be given a wrong extension by accident.
+   */
+  extensionOverride?: string;
 }
 
 export class StorageError extends Error {
@@ -57,8 +67,12 @@ function extensionFor(contentType: string): string {
   return EXTENSIONS[contentType]?.[0] ?? "";
 }
 
-function buildKey(kind: StorageKind, contentType: string): string {
-  const ext = extensionFor(contentType);
+function buildKey(kind: StorageKind, contentType: string, override?: string): string {
+  // The override is sanitised at the boundary before it gets here, and re-checked
+  // here: `PutOptions` is a plain interface that any caller could construct, so the
+  // storage layer does not take the caller's word for it.
+  const ext =
+    override && /^\.[a-z0-9]{1,8}$/.test(override) ? override : extensionFor(contentType);
   const day = new Date().toISOString().slice(0, 10);
   // Random rather than content-addressed: two identical renders are two
   // objects, and the random name avoids leaking a guessable hash.
@@ -86,7 +100,7 @@ function resolveLocal(key: string): string {
 
 const local = {
   async put(data: Buffer | Uint8Array, opts: PutOptions): Promise<StoredObject> {
-    const key = buildKey(opts.kind, opts.contentType);
+    const key = buildKey(opts.kind, opts.contentType, opts.extensionOverride);
     const target = resolveLocal(key);
     await fs.mkdir(path.dirname(target), { recursive: true });
     await fs.writeFile(target, data);
@@ -120,7 +134,7 @@ const supabase = {
   async put(data: Buffer | Uint8Array, opts: PutOptions): Promise<StoredObject> {
     const { getSupabaseAdmin } = await import("@/lib/supabase/admin");
     const client = await getSupabaseAdmin();
-    const key = buildKey(opts.kind, opts.contentType);
+    const key = buildKey(opts.kind, opts.contentType, opts.extensionOverride);
     const { error } = await client.storage
       .from(env.STORAGE_BUCKET)
       .upload(key, data, { contentType: opts.contentType, upsert: false });
@@ -190,6 +204,65 @@ export async function publicMediaUrl(key: string): Promise<string | null> {
 
   if (!env.PUBLIC_MEDIA_BASE_URL) return null;
   return `${env.PUBLIC_MEDIA_BASE_URL}/api/media/public/${key}`;
+}
+
+/**
+ * An extension for a user-supplied filename, or "" when the type is unknown.
+ *
+ * The mapping is MIME-first and filename-second, deliberately. A caller-supplied
+ * filename is attacker-controlled data: `evil.html` uploaded as a video would be
+ * served with a `text/html` content type from our own origin, which turns any
+ * arbitrary-URL bug elsewhere into stored XSS on this app's domain. So the content
+ * type decides the extension, and the caller's filename is only consulted after the
+ * MIME type has been rejected as one we do not accept.
+ */
+export function extensionForUpload(name: string, contentType: string): string {
+  const fromMime = EXTENSIONS[contentType];
+  if (fromMime) return fromMime[0];
+
+  // Not a type we store. Still sanitise: a filename is a string, not a path, and
+  // the extension is reduced to `[a-z0-9]{1,8}` or dropped.
+  const ext = name.includes(".") ? (name.split(".").pop() ?? "") : "";
+  return /^[a-z0-9]{1,8}$/i.test(ext) ? `.${ext.toLowerCase()}` : "";
+}
+
+/**
+ * Bytes, and how to serve them.
+ *
+ * A `Buffer` rather than a stream because the local driver writes with
+ * `fs.readFile` anyway, and the Supabase driver's `download` is an arrayBuffer
+ * behind a REST call. A `ReadableStream` here would be a stream that is always
+ * fully buffered before it starts, which is a more misleading type than an honest
+ * Buffer.
+ */
+export interface FetchedObject {
+  bytes: Buffer;
+  contentType: string;
+}
+
+/** Read an object, or null when it is not there. */
+export async function fetchObject(key: string): Promise<FetchedObject | null> {
+  const bytes = await storage.get(key);
+  if (!bytes) return null;
+  return { bytes, contentType: contentTypeForKey(key) };
+}
+
+/**
+ * The content type to serve a stored object with.
+ *
+ * Derived from the key's extension, which is the same MIME table `put` used to
+ * choose that extension — so the two cannot disagree. An unrecognised extension
+ * falls back to `application/octet-stream`, which makes the browser download the
+ * file rather than trying to interpret it. That is the safe default: rendering
+ * unknown bytes as a guessed type is how a stored-XSS bug happens.
+ */
+export function contentTypeForKey(key: string): string {
+  const ext = key.includes(".") ? (key.split(".").pop() ?? "").toLowerCase() : "";
+  if (!ext) return "application/octet-stream";
+  for (const [mime, exts] of Object.entries(EXTENSIONS)) {
+    if (exts.includes(ext)) return mime;
+  }
+  return "application/octet-stream";
 }
 
 export function isStorageReady(): boolean {
