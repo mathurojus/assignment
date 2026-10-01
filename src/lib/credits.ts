@@ -1,5 +1,5 @@
-import { sql } from "drizzle-orm";
-import { requireDb, schema } from "./db";
+import { eq, sql } from "drizzle-orm";
+import { requireDb, schema, type Database } from "./db";
 import { MICRO, MICRO_PER_CREDIT } from "./db/schema";
 import { env } from "@/lib/env";
 import { usdToCreditsMicro } from "@/lib/openrouter/pricing";
@@ -48,8 +48,25 @@ export interface ReserveInput {
  * than told they are poor, and neither check should have the side effect of
  * reserving money.
  */
-export async function reserveCredits(input: ReserveInput): Promise<DebitResult> {
-  const db = requireDb();
+/**
+ * Every function here takes an optional `db`.
+ *
+ * That exists so the concurrency tests can run against PGlite -- real Postgres
+ * compiled to WebAssembly -- which means `pg_advisory_xact_lock`, the partial
+ * indexes and the CHECK constraints are all genuinely exercised rather than
+ * mocked. A mocked transaction proves nothing about whether two concurrent
+ * deducts can overdraw.
+ *
+ * The override is a whole database handle, not a transaction: every function
+ * here opens its own transaction, which is where the advisory lock is taken.
+ */
+export type DbOverride = Database;
+
+export async function reserveCredits(
+  input: ReserveInput,
+  dbOverride?: DbOverride,
+): Promise<DebitResult> {
+  const db = (dbOverride ?? requireDb()) as Database;
   const { userId, amount } = input;
   if (amount <= 0) return { ok: true, balanceMicro: 0 };
 
@@ -71,11 +88,14 @@ export async function reserveCredits(input: ReserveInput): Promise<DebitResult> 
     const windowStart = new Date();
     windowStart.setMinutes(0, 0, 0);
 
+    // Dates, not ISO strings. The columns are `timestamp with time zone` and
+    // drizzle's PgTimestamp calls `.toISOString()` on whatever it is handed, so
+    // passing a string throws `value.toISOString is not a function`.
     const [limit] = await tx
       .select()
       .from(schema.rateLimits)
       .where(
-        sql`${schema.rateLimits.userId} = ${userId}::uuid AND ${schema.rateLimits.windowStart} = ${windowStart.toISOString()}`,
+        sql`${schema.rateLimits.userId} = ${userId}::uuid AND ${schema.rateLimits.windowStart} = ${windowStart}`,
       )
       .limit(1);
 
@@ -110,11 +130,18 @@ export async function reserveCredits(input: ReserveInput): Promise<DebitResult> 
     today.setUTCHours(0, 0, 0, 0);
     const capMicro = Math.round(env.GLOBAL_DAILY_SPEND_CAP_USD * MICRO);
 
-    const [{ spent }] = await tx
-      .select({ spent: sql<number>`coalesce((SELECT ${schema.dailySpend.spentMicro} FROM ${schema.dailySpend} WHERE ${schema.dailySpend.day} = ${today.toISOString()}), 0)::bigint` });
+    // A plain read, not a bare `select({... sql`...`})`. Drizzle requires a
+    // `.from()` to know which table a projection belongs to, and without it the
+    // query fails with "not iterable" -- which says nothing useful.
+    const [todayRow] = await tx
+      .select({ spentMicro: schema.dailySpend.spentMicro })
+      .from(schema.dailySpend)
+      .where(eq(schema.dailySpend.day, today))
+      .limit(1);
+    const spent = todayRow?.spentMicro ?? 0;
 
     const estimate = input.costEstimateMicro ?? 0;
-    if (capMicro > 0 && Number(spent) + estimate > capMicro) {
+    if (capMicro > 0 && spent + estimate > capMicro) {
       return {
         ok: false,
         reason: "spend_cap" as const,
@@ -157,7 +184,7 @@ export async function reserveCredits(input: ReserveInput): Promise<DebitResult> 
 
     await tx
       .insert(schema.rateLimits)
-      .values({ userId, windowStart: windowStart.toISOString(), count: used + 1 })
+      .values({ userId, windowStart, count: used + 1 })
       .onConflictDoUpdate({
         target: [schema.rateLimits.userId, schema.rateLimits.windowStart],
         set: { count: used + 1 },
@@ -166,7 +193,7 @@ export async function reserveCredits(input: ReserveInput): Promise<DebitResult> 
     if (capMicro > 0 && estimate > 0) {
       await tx
         .insert(schema.dailySpend)
-        .values({ day: today.toISOString(), spentMicro: estimate })
+        .values({ day: today, spentMicro: estimate })
         .onConflictDoUpdate({
           target: schema.dailySpend.day,
           set: {
@@ -181,22 +208,41 @@ export async function reserveCredits(input: ReserveInput): Promise<DebitResult> 
 }
 
 /**
- * Return held credits. Used on failure, cancel, expiry, and for the difference
- * between estimate and actual cost.
+ * Adjust a balance by a signed amount, always writing a ledger row.
  *
- * `ledger` is always written. A refund that only changes the balance is
- * invisible when someone later asks "why did this user lose 40 credits".
+ * Positive refunds. Negative charges -- that is, taking the difference when a
+ * per-token job cost more than the ceiling we held. Both are needed, and the
+ * sign is the direction.
+ *
+ * The `amount <= 0` guard this replaced silently discarded negative amounts,
+ * which meant the overage case was a no-op: the user kept their refund-adjacent
+ * balance and was never charged the extra. The guard is now `=== 0`, and the
+ * debit path carries its own conditional so it still cannot overdraw.
+ *
+ * The ledger row is not optional. A balance change with no corresponding entry
+ * is invisible when someone later asks "why did this user lose 40 credits".
  */
-export async function releaseCredits(input: {
-  userId: string;
-  amount: number;
-  generationId?: string;
-  reason: "job_refund" | "job_reconcile";
-  metadata?: Record<string, unknown>;
-}): Promise<number | null> {
-  const db = requireDb();
+export async function releaseCredits(
+  input: {
+    userId: string;
+    amount: number;
+    generationId?: string;
+    reason: "job_refund" | "job_reconcile";
+    metadata?: Record<string, unknown>;
+  },
+  dbOverride?: DbOverride,
+): Promise<number | null> {
+  const db = (dbOverride ?? requireDb()) as Database;
   const { userId, amount } = input;
-  if (amount <= 0) return null;
+  if (amount === 0) return null;
+
+  // A debit gets the same treatment as the reserve debit: conditional, so a
+  // charge larger than the remaining balance is refused rather than pushing the
+  // balance below zero.
+  const where =
+    amount < 0
+      ? sql`${schema.users.id} = ${userId}::uuid AND ${schema.users.credits} >= ${-amount}`
+      : sql`${schema.users.id} = ${userId}::uuid`;
 
   return db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${userId}))`);
@@ -204,7 +250,7 @@ export async function releaseCredits(input: {
     const [updated] = await tx
       .update(schema.users)
       .set({ credits: sql`${schema.users.credits} + ${amount}`, updatedAt: new Date() })
-      .where(sql`${schema.users.id} = ${userId}::uuid`)
+      .where(where)
       .returning({ credits: schema.users.credits });
 
     if (!updated) return null;
@@ -229,16 +275,32 @@ export async function releaseCredits(input: {
  * quoted $0.05 and billed $0.012 should end up 0.038 credits richer, and the
  * ledger should show both the hold and the refund.
  */
-export async function settleGeneration(input: {
-  userId: string;
-  generationId: string;
-  heldMicro: number;
-  actualUsd: number | null;
-  metadata?: Record<string, unknown>;
-}): Promise<{ chargedMicro: number; refundedMicro: number; balanceMicro: number | null }> {
+export async function settleGeneration(
+  input: {
+    userId: string;
+    generationId: string;
+    heldMicro: number;
+    actualUsd: number | null;
+    metadata?: Record<string, unknown>;
+  },
+  dbOverride?: DbOverride,
+): Promise<{ chargedMicro: number; refundedMicro: number; balanceMicro: number | null }> {
   const actualMicro =
     input.actualUsd === null ? input.heldMicro : Math.round(input.actualUsd * MICRO);
-  const creditsCharged = usdToCreditsMicro(input.actualUsd ?? 0);
+
+  // An unknown cost must not become a free generation.
+  //
+  // `actualUsd === null` means we never learned what OpenRouter billed: the
+  // process died between the job completing upstream and the poll that reports
+  // `usage.cost`. The money was already spent upstream, so the hold stands in
+  // full.
+  //
+  // The opposite default -- treating null as zero -- refunds the entire hold,
+  // which makes "crash during download" a reliable way to get a free video.
+  // That is a real bug this function had. Jobs that genuinely failed are
+  // refunded by `failJob()`, which knows the difference.
+  const creditsCharged =
+    input.actualUsd === null ? input.heldMicro : usdToCreditsMicro(input.actualUsd);
 
   // What the hold was worth, in credits. Anything the actual cost did not use
   // goes back.
@@ -248,31 +310,41 @@ export async function settleGeneration(input: {
   let balanceMicro: number | null = null;
 
   if (refund > 0) {
-    balanceMicro = await releaseCredits({
-      userId: input.userId,
-      amount: refund,
-      generationId: input.generationId,
-      reason: "job_reconcile",
-      metadata: { ...input.metadata, heldMicro: input.heldMicro, actualMicro },
-    });
+    balanceMicro = await releaseCredits(
+      {
+        userId: input.userId,
+        amount: refund,
+        generationId: input.generationId,
+        reason: "job_reconcile",
+        metadata: { ...input.metadata, heldMicro: input.heldMicro, actualMicro },
+      },
+      dbOverride,
+    );
   } else if (extraCharge > 0) {
     // The real cost exceeded the reservation. This is possible on per-token
     // pricing. Take it rather than letting the user underpay silently.
-    balanceMicro = await releaseCredits({
-      userId: input.userId,
-      amount: -extraCharge,
-      generationId: input.generationId,
-      reason: "job_reconcile",
-      metadata: { ...input.metadata, heldMicro: input.heldMicro, actualMicro },
-    });
+    balanceMicro = await releaseCredits(
+      {
+        userId: input.userId,
+        amount: -extraCharge,
+        generationId: input.generationId,
+        reason: "job_reconcile",
+        metadata: { ...input.metadata, heldMicro: input.heldMicro, actualMicro },
+      },
+      dbOverride,
+    );
   }
 
   return { chargedMicro: creditsCharged, refundedMicro: refund, balanceMicro };
 }
 
 /** Grant credits at signup. Idempotent per user so a re-provision cannot double-grant. */
-export async function grantSignupCredits(userId: string, email: string): Promise<number> {
-  const db = requireDb();
+export async function grantSignupCredits(
+  userId: string,
+  email: string,
+  dbOverride?: DbOverride,
+): Promise<number> {
+  const db = (dbOverride ?? requireDb()) as Database;
   const amount = Math.round(env.FREE_STARTING_CREDITS * MICRO_PER_CREDIT);
   if (amount <= 0) return 0;
 
@@ -320,13 +392,16 @@ export async function grantSignupCredits(userId: string, email: string): Promise
 }
 
 /** Admin credit adjustment. Always writes a ledger row. */
-export async function adminAdjust(input: {
-  userId: string;
-  deltaMicro: number;
-  adminId: string;
-  note?: string;
-}): Promise<{ ok: boolean; balanceMicro?: number; error?: string }> {
-  const db = requireDb();
+export async function adminAdjust(
+  input: {
+    userId: string;
+    deltaMicro: number;
+    adminId: string;
+    note?: string;
+  },
+  dbOverride?: DbOverride,
+): Promise<{ ok: boolean; balanceMicro?: number; error?: string }> {
+  const db = (dbOverride ?? requireDb()) as Database;
   if (input.deltaMicro === 0) return { ok: false, error: "Adjustment must be non-zero." };
 
   return db.transaction(async (tx) => {

@@ -154,10 +154,12 @@ export async function openrouterFetch<T>(path: string, options: RequestOptions =
         payload = text.slice(0, 400);
       }
 
-      const upstreamMessage =
-        (payload as { error?: { message?: string } })?.error?.message ??
-        (typeof payload === "string" ? payload : "") ||
-        `HTTP ${res.status}`;
+      // `??` and `||` cannot be mixed without parentheses, and they are not
+        // interchangeable here: a present-but-empty message should fall through
+        // to the status line rather than produce an empty error string.
+        const structured = (payload as { error?: { message?: string } })?.error?.message;
+        const raw = typeof payload === "string" ? payload : "";
+        const upstreamMessage = structured ?? (raw || `HTTP ${res.status}`);
 
       const error =
         kind === "insufficient_credits"

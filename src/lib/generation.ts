@@ -1,9 +1,8 @@
-import { sql, eq, and, or, inArray, desc, asc, lt, isNull } from "drizzle-orm";
+import { and, eq, inArray, lt, sql } from "drizzle-orm";
 import { requireDb, schema } from "./db";
 import { quote as priceQuote, toMicro, usdToCreditsMicro, type Quote } from "@/lib/openrouter/pricing";
 import { normaliseVideoModel, type RawVideoModel, type VideoModel } from "@/lib/openrouter/models";
 import { assemblePrompt } from "@/lib/prompt";
-import { getPreset } from "@/lib/presets";
 import { reserveCredits, settleGeneration, releaseCredits } from "@/lib/credits";
 import { publicMediaUrl, storage, isStorageReady } from "@/lib/storage";
 import { NotConfiguredError } from "@/lib/api";
@@ -15,7 +14,19 @@ import {
   TERMINAL_UPSTREAM,
   upstreamErrorMessage,
 } from "@/lib/openrouter/video";
-import { CREDIT_RESERVE_CEILING_USD } from "@/lib/env";
+
+/** A row as it comes back from the `generations` table. */
+type GenerationRow = typeof schema.generations.$inferSelect;
+
+/**
+ * What one call to `advanceGeneration` did.
+ *
+ * "skipped" is a real outcome, not an error: it means another worker claimed
+ * the row first, or the job had already reached a terminal state. Reporting it
+ * honestly is what lets the caller distinguish "nothing to do" from "I did the
+ * work".
+ */
+type AdvanceResult = "skipped" | "progressed";
 
 /**
  * The generation lifecycle.
@@ -79,11 +90,19 @@ export type CreateGenerationResult =
       balanceMicro: number;
     };
 
-export interface CostEstimate extends Quote {
+/**
+ * A quote plus the two numbers the caller needs.
+ *
+ * An intersection, not `interface ... extends Quote`: `Quote` is a *union*, and
+ * an interface can only extend an object type with statically known members. The
+ * intersection distributes over the union, so `estimate.estimable` narrows
+ * correctly and `estimate.costUsd` is only reachable inside the `true` branch.
+ */
+export type CostEstimate = Quote & {
   creditsMicro: number;
   /** What will actually be held. Equals creditsMicro when estimable. */
   reservedMicro: number;
-}
+};
 
 /**
  * Estimate a job's cost and the credits it will hold.
@@ -112,7 +131,7 @@ export function estimateCost(
   });
 
   const creditsMicro = q.estimable ? usdToCreditsMicro(q.costUsd) : 0;
-  const ceilingMicro = usdToCreditsMicro(CREDIT_RESERVE_CEILING_USD);
+  const ceilingMicro = usdToCreditsMicro(env.CREDIT_RESERVE_CEILING_USD);
 
   return {
     ...q,
@@ -140,10 +159,14 @@ export async function createGeneration(
   let models: VideoModel[];
   try {
     models = await listVideoModels();
-  } catch (e) {
+  } catch (cause) {
+    // The cause is preserved so the server log explains *why* the list could not
+    // load. The message the user sees stays about the missing configuration,
+    // because "ECONNRESOLVE openrouter.ai" is not actionable for them.
     throw new NotConfiguredError(
       "OPENROUTER_API_KEY",
       "Could not load the OpenRouter model list, so the cost of this job cannot be determined.",
+      { cause },
     );
   }
 
@@ -173,7 +196,17 @@ export async function createGeneration(
     );
   }
 
-  const prompt = assemblePrompt({
+  // The exact string that will be sent upstream, frozen at submit time.
+//
+// `generations.prompt` holds the user's own words, verbatim, because that is
+// what they asked for and it is what the gallery should show. This is the
+// machine's rendering of it.
+//
+// Both are stored on purpose. Recomputing the final prompt at send time would
+// mean that any future change to `assemblePrompt` silently rewrites history: a
+// job from three months ago would no longer reproduce what was actually sent,
+// which is exactly the property an audit trail is supposed to have.
+  const finalPrompt = assemblePrompt({
     prompt: input.prompt,
     enhancedPrompt: input.enhancedPrompt,
     presetSlug: input.presetSlug,
@@ -199,10 +232,11 @@ export async function createGeneration(
         size: input.params.size ?? null,
         generateAudio,
         seed: input.params.seed ?? null,
+        finalPrompt,
       },
       status: "queued",
       sourceImageUrl: input.sourceImageKey ?? null,
-      costEstimateMicro: toMicro(estimate.estimable ? estimate.costUsd : CREDIT_RESERVE_CEILING_USD),
+      costEstimateMicro: toMicro(estimate.estimable ? estimate.costUsd : env.CREDIT_RESERVE_CEILING_USD),
       nextPollAt: new Date(),
     })
     .returning({ id: schema.generations.id });
@@ -211,7 +245,7 @@ export async function createGeneration(
     userId: input.userId,
     amount: estimate.reservedMicro,
     generationId: row.id,
-    costEstimateMicro: toMicro(estimate.estimable ? estimate.costUsd : CREDIT_RESERVE_CEILING_USD),
+    costEstimateMicro: toMicro(estimate.estimable ? estimate.costUsd : env.CREDIT_RESERVE_CEILING_USD),
     metadata: {
       model: input.model,
       duration,
@@ -277,7 +311,7 @@ function params_duration(requested: number | undefined, model: VideoModel): numb
  * claiming the row from its current status. If another worker already claimed
  * it, the UPDATE affects zero rows and this call returns without doing anything.
  */
-export async function advanceGeneration(generationId: string): Promise<"skipped" | "progressed"> {
+export async function advanceGeneration(generationId: string): Promise<AdvanceResult> {
   if (!hasOpenRouterKey) return "skipped";
 
   const db = requireDb();
@@ -303,7 +337,7 @@ export async function advanceGeneration(generationId: string): Promise<"skipped"
 }
 
 /** queued | submitting -> generating */
-async function submitJob(job: typeof schema.generations.$inferSelect) {
+async function submitJob(job: GenerationRow): Promise<AdvanceResult> {
   if (!hasOpenRouterKey) {
     throw new NotConfiguredError("OPENROUTER_API_KEY", "OPENROUTER_API_KEY is not set.");
   }
@@ -321,15 +355,23 @@ async function submitJob(job: typeof schema.generations.$inferSelect) {
 
   const model = await getModelFor(job.model);
   const params = job.params as Record<string, unknown>;
-  const finalPrompt = assemblePrompt({
-    prompt: job.prompt,
-    enhancedPrompt: job.enhancedPrompt,
-    presetSlug: job.preset,
-    aspectRatio: (params["aspectRatio"] as string) ?? null,
-    resolution: (params["resolution"] as string) ?? null,
-    durationSeconds: (params["durationSeconds"] as number) ?? null,
-    audio: (params["generateAudio"] as boolean) ?? null,
-  });
+
+  // Use the prompt frozen at submit time. The fallback only fires for rows
+  // written before `finalPrompt` was stored, or by a future migration that
+  // forgot to backfill -- in both cases reproducing the prompt beats sending an
+  // empty one.
+  const finalPrompt =
+    typeof params["finalPrompt"] === "string" && params["finalPrompt"].trim()
+      ? (params["finalPrompt"] as string)
+      : assemblePrompt({
+          prompt: job.prompt,
+          enhancedPrompt: job.enhancedPrompt,
+          presetSlug: job.preset,
+          aspectRatio: (params["aspectRatio"] as string) ?? null,
+          resolution: (params["resolution"] as string) ?? null,
+          durationSeconds: (params["durationSeconds"] as number) ?? null,
+          audio: (params["generateAudio"] as boolean) ?? null,
+        });
 
   try {
     const callbackUrl = env.NEXT_PUBLIC_APP_URL
@@ -389,9 +431,12 @@ async function submitJob(job: typeof schema.generations.$inferSelect) {
 }
 
 /** generating -> generating (waiting) | downloading | failed */
-async function pollJob(job: typeof schema.generations.$inferSelect) {
+async function pollJob(job: GenerationRow): Promise<AdvanceResult> {
   if (!job.openrouterJobId) {
-    await failJob(job, { message: "Job was submitted upstream but no job id was recorded." });
+    await failJob(job, {
+      message: "Job was submitted upstream but no job id was recorded.",
+      kind: "poll",
+    });
     return "progressed";
   }
 
@@ -433,7 +478,7 @@ async function pollJob(job: typeof schema.generations.$inferSelect) {
 }
 
 /** downloading -> completed */
-async function downloadJob(job: typeof schema.generations.$inferSelect) {
+async function downloadJob(job: GenerationRow): Promise<AdvanceResult> {
   const db = requireDb();
 
   const [claimed] = await db
@@ -488,7 +533,7 @@ async function downloadJob(job: typeof schema.generations.$inferSelect) {
 
 /** Mark failed and refund. */
 export async function failJob(
-  job: typeof schema.generations.$inferSelect,
+  job: GenerationRow,
   error: { message: string; kind: string },
 ): Promise<void> {
   const db = requireDb();
@@ -531,20 +576,24 @@ export async function claimDueJobs(limit: number): Promise<string[]> {
 
   // SKIP LOCKED so two concurrent ticks claim disjoint sets rather than
   // blocking on each other and then both processing the same rows.
-  const rows = await db.execute<{ id: string }>(sql`
+  //
+  // `FOR UPDATE SKIP LOCKED` is the whole point: without SKIP, a second tick
+  // blocks on the first's row locks, and on a serverless platform with a short
+  // execution limit that shows up as a timeout rather than as duplicate work.
+  const rows = (await db.execute<{ id: string }>(sql`
     UPDATE ${schema.generations}
     SET next_poll_at = now() + interval '30 seconds'
     WHERE id IN (
       SELECT id FROM ${schema.generations}
       WHERE status in ('queued','submitting','generating','downloading')
-        AND next_poll_at <= ${now.toISOString()}
+        AND next_poll_at <= ${now}
         AND created_at > now() - interval '${`${env.JOB_MAX_AGE_MINUTES} minutes`}'
       ORDER BY next_poll_at ASC
       LIMIT ${limit}
       FOR UPDATE SKIP LOCKED
     )
     RETURNING id
-  `);
+  `)) as unknown as { id: string }[];
 
   return rows.map((r) => r.id);
 }

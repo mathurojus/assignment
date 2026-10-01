@@ -29,8 +29,6 @@ export interface StoredObject {
 export interface PutOptions {
   contentType: string;
   kind: StorageKind;
-  /** Original filename, used only to derive an extension. */
-  filename?: string;
 }
 
 export class StorageError extends Error {
@@ -47,17 +45,20 @@ const EXTENSIONS: Record<string, string[]> = {
   "image/webp": [".webp"],
 };
 
-function extensionFor(contentType: string, filename?: string): string {
-  const allowed = EXTENSIONS[contentType];
-  if (!allowed) {
-    // Unknown type: no extension rather than trusting the client's filename.
-    return "";
-  }
-  return allowed[0];
+/**
+ * The extension to write, chosen from the *content type* alone.
+ *
+ * Deliberately not derived from the client's filename. A filename is attacker
+ * controlled, so `victim.png.html` or `../../x.mp4` would ride straight through
+ * a naive `path.extname()` call. The content type is the only trustworthy
+ * input, and an unknown type gets no extension rather than a guess.
+ */
+function extensionFor(contentType: string): string {
+  return EXTENSIONS[contentType]?.[0] ?? "";
 }
 
-function buildKey(kind: StorageKind, contentType: string, filename?: string): string {
-  const ext = extensionFor(contentType, filename);
+function buildKey(kind: StorageKind, contentType: string): string {
+  const ext = extensionFor(contentType);
   const day = new Date().toISOString().slice(0, 10);
   // Random rather than content-addressed: two identical renders are two
   // objects, and the random name avoids leaking a guessable hash.
@@ -85,7 +86,7 @@ function resolveLocal(key: string): string {
 
 const local = {
   async put(data: Buffer | Uint8Array, opts: PutOptions): Promise<StoredObject> {
-    const key = buildKey(opts.kind, opts.contentType, opts.filename);
+    const key = buildKey(opts.kind, opts.contentType);
     const target = resolveLocal(key);
     await fs.mkdir(path.dirname(target), { recursive: true });
     await fs.writeFile(target, data);
@@ -119,7 +120,7 @@ const supabase = {
   async put(data: Buffer | Uint8Array, opts: PutOptions): Promise<StoredObject> {
     const { getSupabaseAdmin } = await import("@/lib/supabase/admin");
     const client = await getSupabaseAdmin();
-    const key = buildKey(opts.kind, opts.contentType, opts.filename);
+    const key = buildKey(opts.kind, opts.contentType);
     const { error } = await client.storage
       .from(env.STORAGE_BUCKET)
       .upload(key, data, { contentType: opts.contentType, upsert: false });

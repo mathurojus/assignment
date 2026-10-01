@@ -1,4 +1,4 @@
-import type { NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { ZodError } from "zod";
 import { isOpenRouterError, type OpenRouterError } from "@/lib/openrouter/errors";
 import { isDatabaseUnavailable } from "@/lib/db";
@@ -113,9 +113,11 @@ export function handleError(error: unknown): NextResponse {
   return apiError(
     "internal_error",
     "Something went wrong on our side. The error has been logged.",
-    ...(process.env.NODE_ENV === "development"
+    // The real message in development only. Spreading a conditional into an
+    // argument list does not typecheck, so the object is built conditionally.
+    process.env.NODE_ENV === "development"
       ? { debug: error instanceof Error ? error.message : String(error) }
-      : {}),
+      : {},
   );
 }
 
@@ -124,8 +126,9 @@ export class NotConfiguredError extends Error {
   constructor(
     readonly variable: string,
     message?: string,
+    options?: { cause?: unknown },
   ) {
-    super(message ?? `${variable} is not set, so this feature is unavailable. See .env.example.`);
+    super(message ?? `${variable} is not set, so this feature is unavailable. See .env.example.`, options);
     this.name = "NotConfiguredError";
   }
 }
@@ -138,10 +141,15 @@ export class StorageUnavailableError extends Error {
   }
 }
 
-/** Run a handler, converting any thrown value into the standard error shape. */
-export async function route<T extends unknown[]>(
-  handler: (...args: T) => Promise<NextResponse>,
-): Promise<NextResponse> {
+/**
+ * Run a handler, converting any thrown value into the standard error shape.
+ *
+ * Takes a zero-argument thunk rather than a function with a rest tuple: the
+ * handlers are async closures over their own `request`, so there is nothing to
+ * pass in, and `T extends unknown[]` would have to be instantiated at each call
+ * site for no benefit.
+ */
+export async function route(handler: () => Promise<NextResponse>): Promise<NextResponse> {
   try {
     return await handler();
   } catch (error) {

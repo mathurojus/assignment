@@ -225,7 +225,13 @@ describe("quote", () => {
     const empty = parseModelPricing({});
     const q = quote(empty, { durationSeconds: 5 });
     expect(q.estimable).toBe(false);
-    if (!q.estimable) expect(q.costUsd).toBeUndefined();
+    // The important assertion: there is no `costUsd` at all. A zero would be
+    // worse than absent, because the UI would render "$0.00" and invite a job
+    // that then bills real money.
+    if (!q.estimable) {
+      expect("costUsd" in q).toBe(false);
+      expect(q.reason).toMatch(/no per-second pricing/i);
+    }
   });
 });
 
