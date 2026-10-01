@@ -1,0 +1,7 @@
+# The capture logs are evidence and must stay byte-exact. Without this, Git
+# rewrites LF -> CRLF on checkout on Windows, which would edit the recorded
+# prompt and response text after the fact.
+.agent-logs/** -text
+
+# Keep the plugin source LF too, so the file that runs is the file committed.
+.opencode/**/*.ts text eol=lf
