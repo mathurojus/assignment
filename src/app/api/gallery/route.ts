@@ -121,6 +121,12 @@ export async function GET(request: Request) {
         isPublic: row.isPublic,
         outputKey: row.outputUrl,
         outputUrl: row.outputUrl ? publicMediaUrl(row.outputUrl) : null,
+        /**
+         * How many images this job produced. A tile shows the first; the detail
+         * page shows the rest. Counted from `outputs` with a fallback to 1 for
+         * rows written before that column existed.
+         */
+        outputCount: Math.max(1, row.outputs.length),
         mimeType: row.mimeType,
         error: row.error,
         costUsd:

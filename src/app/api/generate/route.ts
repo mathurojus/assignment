@@ -39,8 +39,14 @@ const generateBody = z
     size: z.string().max(40).optional(),
     generateAudio: z.boolean().optional(),
     seed: z.number().int().optional(),
+    /** Image jobs only. Clamped to the model's own maximum before use. */
+    count: z.number().int().min(1).max(10).optional(),
+    /** Image jobs only. */
+    quality: z.string().max(20).optional(),
+    /** Image jobs only: png | jpeg | webp. */
+    outputFormat: z.string().max(20).optional(),
     isPublic: z.boolean().optional(),
-    /** Base64 or data URL, for a generated start frame. */
+    /** Base64 or data URL, for a generated start frame or a reference image. */
     sourceImageDataUrl: z.string().max(10_000_000).optional(),
   })
   .refine((v) => !(v.type === "video" && !v.model), {
@@ -94,7 +100,7 @@ export async function POST(request: Request) {
       return apiError("validation_failed", `"${parsed.presetSlug}" is not a camera preset.`);
     }
 
-    // --- start frame ------------------------------------------------------
+    // --- start frame or reference image ---------------------------------
     let sourceImageKey: string | null = null;
     if (parsed.sourceImageDataUrl) {
       if (!isStorageReady()) {
@@ -103,18 +109,22 @@ export async function POST(request: Request) {
       const stored = await storeDataUrl(parsed.sourceImageDataUrl);
       sourceImageKey = stored;
 
-      // A start frame is useless if OpenRouter cannot fetch it, and the failure
+      // An input image is useless if OpenRouter cannot fetch it, and the failure
       // mode upstream is a confusing 400. Say so here instead.
-      if (parsed.type === "video") {
-        const reachable = await publicMediaUrl(stored);
-        if (!reachable) {
-          throw new NotConfiguredError(
-            "PUBLIC_MEDIA_BASE_URL",
-            "Image-to-video needs OpenRouter to fetch your start frame, and it cannot reach " +
-              "this app's media route. Set PUBLIC_MEDIA_BASE_URL to a public origin (a tunnel " +
-              "works for local development), or use a text-to-video model.",
-          );
-        }
+      //
+      // Checked for both job types, not just video: image-to-image and reference
+      // -based models fetch `input_references` the same way a start frame is
+      // fetched. The message names which one it is so the fix is obvious.
+      const reachable = await publicMediaUrl(stored);
+      if (!reachable) {
+        throw new NotConfiguredError(
+          "PUBLIC_MEDIA_BASE_URL",
+          (parsed.type === "video"
+            ? "Image-to-video needs OpenRouter to fetch your start frame"
+            : "Image-to-image needs OpenRouter to fetch your reference image") +
+            ", and it cannot reach this app's media route. Set PUBLIC_MEDIA_BASE_URL to a " +
+            "public origin (a tunnel works for local development), or generate from text alone.",
+        );
       }
     }
 
@@ -133,6 +143,9 @@ export async function POST(request: Request) {
         size: parsed.size,
         generateAudio: parsed.generateAudio,
         seed: parsed.seed,
+        count: parsed.count,
+        quality: parsed.quality,
+        outputFormat: parsed.outputFormat,
       },
       sourceImageKey,
       isPublic: parsed.isPublic ?? false,

@@ -120,6 +120,20 @@ export const generations = pgTable(
     mimeType: text("mime_type"),
     bytes: integer("bytes"),
 
+    /**
+     * Every output, for jobs that produce more than one.
+     *
+     * `output_url` holds the first item and remains the single-output path, so
+     * the gallery, the detail page and the media route all work unchanged for
+     * video. This column is what makes an `n: 4` image job representable without
+     * inventing four rows — which would have meant four credits holds, four
+     * statuses and four gallery entries for one user action.
+     */
+    outputs: jsonb("outputs")
+      .$type<Array<{ key: string; mimeType: string; bytes: number }>>()
+      .notNull()
+      .default([]),
+
     // ---- money -----------------------------------------------------------
     /** micro-USD. What we told the user before submitting. */
     costEstimateMicro: bigint("cost_estimate_micro", { mode: "number" }).notNull().default(0),

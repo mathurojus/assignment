@@ -43,6 +43,8 @@ export interface SessionUser {
   name: string | null;
   avatarUrl: string | null;
   isAdmin: boolean;
+  /** Balance in micro-credits. Read here so the header needs no second query. */
+  creditsMicro: number;
 }
 
 /**
@@ -96,5 +98,6 @@ export async function getSessionUser(): Promise<SessionUser | null> {
     name: row.name ?? null,
     avatarUrl: row.avatarUrl ?? null,
     isAdmin: row.isAdmin,
+    creditsMicro: row.credits,
   };
 }

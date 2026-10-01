@@ -66,6 +66,25 @@ export async function GET(
       /** Storage keys, not URLs. The client builds a route through them. */
       outputKey: row.outputUrl,
       outputUrl: row.outputUrl ? publicMediaUrl(row.outputUrl) : null,
+      /**
+       * Every output, for an `n > 1` image job.
+       *
+       * Falls back to the single `outputUrl` for rows written before the
+       * `outputs` column existed, so a job from an older deploy still renders
+       * instead of appearing to have produced nothing.
+       */
+      outputs: (
+        row.outputs.length > 0
+          ? row.outputs
+          : row.outputUrl
+            ? [{ key: row.outputUrl, mimeType: row.mimeType ?? "application/octet-stream", bytes: row.bytes ?? 0 }]
+            : []
+      ).map((o) => ({
+        key: o.key,
+        url: publicMediaUrl(o.key),
+        mimeType: o.mimeType,
+        bytes: o.bytes,
+      })),
       sourceImageKey: row.sourceImageUrl,
       sourceImageUrl: row.sourceImageUrl ? publicMediaUrl(row.sourceImageUrl) : null,
       mimeType: row.mimeType,

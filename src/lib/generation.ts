@@ -9,11 +9,14 @@ import { NotConfiguredError } from "@/lib/api";
 import { hasDatabase, hasOpenRouterKey, env } from "@/lib/env";
 import {
   downloadVideo,
+  generateImages,
   pollVideo,
   submitVideo,
   TERMINAL_UPSTREAM,
   upstreamErrorMessage,
 } from "@/lib/openrouter/video";
+import { imagePricingFor, quoteImage, type ImagePricing } from "@/lib/openrouter/image-pricing";
+import type { ImageModel } from "@/lib/openrouter/models";
 
 /** A row as it comes back from the `generations` table. */
 type GenerationRow = typeof schema.generations.$inferSelect;
@@ -55,6 +58,12 @@ export interface CreateGenerationInput {
     generateAudio?: boolean;
     seed?: number;
     hasFirstFrame?: boolean;
+    /** Image jobs: how many images to produce. Clamped to the model's maximum. */
+    count?: number;
+    /** Image jobs: "low" | "medium" | "high", when the model offers it. */
+    quality?: string;
+    /** Image jobs: "png" | "jpeg" | "webp", when the model offers it. */
+    outputFormat?: string;
   };
   sourceImageKey?: string | null;
   /** Whether this job may appear in the public explore feed. */
@@ -74,12 +83,31 @@ export type RejectionReason =
   | "rate_limited"
   | "spend_cap";
 
+/**
+ * A cost estimate as the API returns it, for either job type.
+ *
+ * The intersection of the video and image quotes: what the UI needs to render a
+ * price and an "unpriceable" reason. The richer per-type fields (`ruleKey`,
+ * `unit`) are internal to the cost engine and never reach a client.
+ */
+export interface JobEstimate {
+  estimable: boolean;
+  /** null when not estimable. Never 0 — a real free job does not exist upstream. */
+  costUsd: number | null;
+  /** Human-readable explanation of the number, or of why there is none. */
+  basis: string;
+  /** Why it is not estimable. Present exactly when `estimable` is false. */
+  reason?: string;
+  /** What the hold was, in micro-credits. */
+  reservedMicro: number;
+}
+
 export type CreateGenerationResult =
   | {
       ok: true;
       id: string;
       status: "queued";
-      estimate: CostEstimate;
+      estimate: JobEstimate;
       creditsHeld: number;
       balanceMicro: number;
     }
@@ -87,7 +115,7 @@ export type CreateGenerationResult =
       ok: false;
       reason: RejectionReason;
       message: string;
-      estimate: CostEstimate;
+      estimate: JobEstimate;
       /** What the user currently holds, in micro-credits. */
       balanceMicro: number;
     };
@@ -142,6 +170,58 @@ export function estimateCost(
   };
 }
 
+/**
+ * The image equivalent of `estimateCost`.
+ *
+ * A separate function rather than a parameterised `estimateCost` because the two
+ * quote unions have different shapes (`ruleKey` and `unit` exist on one and not
+ * the other) and a merged signature would make both call sites cast.
+ */
+export interface ImageCostEstimate {
+  estimable: boolean;
+  costUsd: number | null;
+  reason?: string;
+  basis: string;
+  creditsMicro: number;
+  reservedMicro: number;
+}
+
+export function estimateImageCost(
+  pricing: ImagePricing,
+  params: { count?: number; resolution?: string | null; referenceCount?: number },
+): ImageCostEstimate {
+  const q = quoteImage(pricing, {
+    count: params.count ?? 1,
+    resolution: params.resolution,
+    referenceCount: params.referenceCount,
+  });
+
+  if (!q.estimable) {
+    const ceilingMicro = usdToCreditsMicro(env.CREDIT_RESERVE_CEILING_USD);
+    return {
+      estimable: false,
+      costUsd: null,
+      reason: q.reason,
+      basis: q.basis,
+      creditsMicro: 0,
+      reservedMicro: Math.min(ceilingMicro, 100_000),
+    };
+  }
+
+  const creditsMicro = usdToCreditsMicro(q.costUsd);
+  return {
+    estimable: true,
+    costUsd: q.costUsd,
+    basis: q.basis,
+    creditsMicro,
+    // Hold slightly above the estimate so a real cost a hair higher than the
+    // quote cannot turn a successful generation into an unfunded one. The excess
+    // is refunded on settle, and that refund is on the same transaction as the
+    // charge.
+    reservedMicro: Math.max(creditsMicro, Math.round(creditsMicro * 1.02)),
+  };
+}
+
 /** Create a queued job, holding credits. Nothing is sent upstream yet. */
 export async function createGeneration(
   input: CreateGenerationInput,
@@ -153,11 +233,91 @@ export async function createGeneration(
     throw new NotConfiguredError("STORAGE_DRIVER", "Storage is not configured.");
   }
 
-  const db = requireDb();
+/**
+   * Resolved parameters and estimate for one job.
+   *
+   * Video and image pricing come from different upstream endpoints with
+   * different shapes, so this is one function with two branches rather than two
+   * functions with a shared return type: the prompt assembly, the insert and the
+   * credit hold that follow are identical, and duplicating those to avoid a
+   * branch would put two copies of the money code in one file.
+   */
+  const { listVideoModels, listImageModels } = await import("@/lib/openrouter/models");
 
-  // Resolve the model for pricing. Cached, so this does not hit the network on
-  // every submit.
-  const { listVideoModels } = await import("@/lib/openrouter/models");
+  if (input.type === "image") {
+    let imageModels: ImageModel[];
+    try {
+      imageModels = await listImageModels();
+    } catch (cause) {
+      throw new NotConfiguredError(
+        "OPENROUTER_API_KEY",
+        "Could not load the OpenRouter image model list, so the cost of this job cannot be determined.",
+        { cause },
+      );
+    }
+
+    const model = imageModels.find((m) => m.id === input.model);
+    if (!model) {
+      throw new NotConfiguredError(
+        "model",
+        `"${input.model}" is not an image model this app can generate with.`,
+      );
+    }
+
+    if (input.sourceImageKey && !model.acceptsReferences) {
+      throw new NotConfiguredError(
+        "input_references",
+        `${model.name} does not accept reference images. Pick a model that does, or remove the image.`,
+      );
+    }
+
+    // Clamp rather than reject. A client asking for 50 images on a model that
+    // caps at 6 has made a mistake, but failing the whole job over a field with
+    // an obvious answer — the model's own maximum — is worse than correcting it.
+    // The count that was actually used is stored in `params`, so the gallery
+    // shows what happened rather than what was asked for.
+    const count = Math.max(
+      1,
+      Math.min(Math.floor(input.params.count ?? 1), model.maxImages || 1),
+    );
+
+    const resolution = pick(input.params.resolution, model.resolutions);
+    const aspectRatio = pick(input.params.aspectRatio, model.aspectRatios);
+
+    // Image pricing needs a second, per-model upstream call: the model list has
+    // no prices. Cached for an hour per process, so this is one round trip per
+    // model per cold start.
+    const pricing = await imagePricingFor(input.model);
+
+    const estimate = estimateImageCost(pricing, {
+      count,
+      resolution,
+      referenceCount: input.sourceImageKey ? 1 : 0,
+    });
+
+    return insertQueued({
+      input,
+      params: {
+        count,
+        resolution,
+        aspectRatio,
+        quality: input.params.quality ?? null,
+        outputFormat: input.params.outputFormat ?? null,
+        seed: input.params.seed ?? null,
+        finalPrompt: assemblePrompt({
+          prompt: input.prompt,
+          enhancedPrompt: input.enhancedPrompt,
+          presetSlug: input.presetSlug,
+          aspectRatio,
+          resolution,
+          durationSeconds: null,
+          audio: null,
+        }),
+      },
+      estimate,
+    });
+  }
+
   let models: VideoModel[];
   try {
     models = await listVideoModels();
@@ -199,24 +359,75 @@ export async function createGeneration(
   }
 
   // The exact string that will be sent upstream, frozen at submit time.
-//
-// `generations.prompt` holds the user's own words, verbatim, because that is
-// what they asked for and it is what the gallery should show. This is the
-// machine's rendering of it.
-//
-// Both are stored on purpose. Recomputing the final prompt at send time would
-// mean that any future change to `assemblePrompt` silently rewrites history: a
-// job from three months ago would no longer reproduce what was actually sent,
-// which is exactly the property an audit trail is supposed to have.
-  const finalPrompt = assemblePrompt({
-    prompt: input.prompt,
-    enhancedPrompt: input.enhancedPrompt,
-    presetSlug: input.presetSlug,
-    aspectRatio,
-    resolution,
-    durationSeconds: duration,
-    audio: generateAudio,
+  //
+  // `generations.prompt` holds the user's own words, verbatim, because that is
+  // what they asked for and it is what the gallery should show. This is the
+  // machine's rendering of it.
+  //
+  // Both are stored on purpose. Recomputing the final prompt at send time would
+  // mean that any future change to `assemblePrompt` silently rewrites history: a
+  // job from three months ago would no longer reproduce what was actually sent,
+  // which is exactly the property an audit trail is supposed to have.
+  return insertQueued({
+    input,
+    params: {
+      durationSeconds: duration,
+      resolution,
+      aspectRatio,
+      size: input.params.size ?? null,
+      generateAudio,
+      seed: input.params.seed ?? null,
+      finalPrompt: assemblePrompt({
+        prompt: input.prompt,
+        enhancedPrompt: input.enhancedPrompt,
+        presetSlug: input.presetSlug,
+        aspectRatio,
+        resolution,
+        durationSeconds: duration,
+        audio: generateAudio,
+      }),
+    },
+    estimate: toJobEstimate(estimate),
   });
+}
+
+/**
+ * The estimate as the rest of `createGeneration` needs it, from either branch.
+ *
+ * A tiny adapter rather than a union so the insert and hold below do not have to
+ * narrow on `estimable` twice for two different quote shapes.
+ */
+type NormalisedEstimate = JobEstimate;
+
+/** Drop the video-quote-only fields and add the missing `costUsd: null`. */
+function toJobEstimate(q: Quote & { creditsMicro: number; reservedMicro: number }): NormalisedEstimate {
+  return q.estimable
+    ? { estimable: true, costUsd: q.costUsd, basis: q.basis, reservedMicro: q.reservedMicro }
+    : {
+        estimable: false,
+        costUsd: null,
+        basis: q.basis,
+        reason: q.reason,
+        reservedMicro: q.reservedMicro,
+      };
+}
+
+/** Insert the queued row and take the credit hold. */
+async function insertQueued(args: {
+  input: CreateGenerationInput;
+  params: Record<string, unknown>;
+  estimate: NormalisedEstimate;
+}): Promise<CreateGenerationResult> {
+  const { input, params, estimate } = args;
+  const db = requireDb();
+
+  // An unestimable job still records *something* as its estimate: the ceiling it
+  // is holding against. Recording zero would make "we held a dollar" and "this
+  // was free" indistinguishable in the admin stats.
+  const estimateMicro =
+    estimate.estimable && estimate.costUsd !== null
+      ? toMicro(estimate.costUsd)
+      : toMicro(env.CREDIT_RESERVE_CEILING_USD);
 
   const [row] = await db
     .insert(schema.generations)
@@ -227,19 +438,11 @@ export async function createGeneration(
       prompt: input.prompt,
       enhancedPrompt: input.enhancedPrompt ?? null,
       preset: input.presetSlug ?? null,
-      params: {
-        durationSeconds: duration,
-        resolution,
-        aspectRatio,
-        size: input.params.size ?? null,
-        generateAudio,
-        seed: input.params.seed ?? null,
-        finalPrompt,
-      },
+      params,
       status: "queued",
       sourceImageUrl: input.sourceImageKey ?? null,
       isPublic: input.isPublic ?? false,
-      costEstimateMicro: toMicro(estimate.estimable ? estimate.costUsd : env.CREDIT_RESERVE_CEILING_USD),
+      costEstimateMicro: estimateMicro,
       nextPollAt: new Date(),
     })
     .returning({ id: schema.generations.id });
@@ -248,11 +451,10 @@ export async function createGeneration(
     userId: input.userId,
     amount: estimate.reservedMicro,
     generationId: row.id,
-    costEstimateMicro: toMicro(estimate.estimable ? estimate.costUsd : env.CREDIT_RESERVE_CEILING_USD),
+    costEstimateMicro: estimateMicro,
     metadata: {
       model: input.model,
-      duration,
-      resolution,
+      type: input.type,
       estimable: estimate.estimable,
     },
   });
@@ -302,6 +504,18 @@ export async function createGeneration(
   };
 }
 
+/**
+ * The requested value if the model supports it, otherwise the model's own first.
+ *
+ * Falling back rather than rejecting is what keeps a model list that changed
+ * upstream from turning every save into an error. The value that was actually
+ * used is stored, so nothing downstream is misled about what happened.
+ */
+function pick(requested: string | undefined | null, supported: string[]): string | null {
+  if (requested && supported.includes(requested)) return requested;
+  return supported[0] ?? null;
+}
+
 function params_duration(requested: number | undefined, model: VideoModel): number {
   if (requested && model.durations.includes(requested)) return requested;
   return model.durations[0] ?? 5;
@@ -327,6 +541,15 @@ export async function advanceGeneration(generationId: string): Promise<AdvanceRe
   if (!job) return "skipped";
   if (["completed", "failed", "cancelled", "expired"].includes(job.status)) return "skipped";
 
+  // Images have no polling phase: `/images` blocks and returns base64. So an
+  // image job runs `queued -> submitting -> completed` in a single call, and the
+  // `generating` / `downloading` states below are video-only. The claim-and-
+  // guard shape is the same in both, so a concurrent tick still cannot run one
+  // job twice.
+  if (job.type === "image") {
+    return submitImageJob(job);
+  }
+
   if (job.status === "queued" || job.status === "submitting") {
     return submitJob(job);
   }
@@ -337,6 +560,181 @@ export async function advanceGeneration(generationId: string): Promise<AdvanceRe
     return downloadJob(job);
   }
   return "skipped";
+}
+
+/**
+ * queued | submitting -> completed, for image jobs.
+ *
+ * Runs the whole thing in one call: the upstream request, storing every returned
+ * image, settling the credits, and marking the row done. There is no intermediate
+ * state to persist because there is no gap between the request and the result —
+ * splitting it would only add a place for a crash to strand a paid-for job.
+ */
+async function submitImageJob(job: GenerationRow): Promise<AdvanceResult> {
+  if (!hasOpenRouterKey) {
+    throw new NotConfiguredError("OPENROUTER_API_KEY", "OPENROUTER_API_KEY is not set.");
+  }
+
+  const db = requireDb();
+
+  // Claim it, from either status, so a retry after a crash mid-request can still
+  // take it. `attempts` increments on every claim, which is what `expireStaleJobs`
+  // reads to give up eventually.
+  const [claimed] = await db
+    .update(schema.generations)
+    .set({ status: "submitting", attempts: job.attempts + 1, updatedAt: new Date() })
+    .where(
+      and(
+        eq(schema.generations.id, job.id),
+        inArray(schema.generations.status, ["queued", "submitting"]),
+      ),
+    )
+    .returning();
+
+  if (!claimed) return "skipped";
+
+  const params = job.params as Record<string, unknown>;
+
+  try {
+    // Reference images need a URL OpenRouter can fetch, exactly as a video start
+    // frame does.
+    let references: Array<{ type: "image_url"; image_url: { url: string } }> | undefined;
+    if (job.sourceImageUrl) {
+      const url = await publicMediaUrl(job.sourceImageUrl);
+      if (!url) {
+        await failJob(job, {
+          message:
+            "A reference image was provided but OpenRouter cannot fetch it. Set PUBLIC_MEDIA_BASE_URL to a publicly reachable origin, or switch STORAGE_DRIVER to supabase.",
+          kind: "storage",
+        });
+        return "progressed";
+      }
+      references = [{ type: "image_url", image_url: { url } }];
+    }
+
+    const result = await generateImages({
+      model: job.model,
+      prompt: finalPromptFor(job),
+      ...(typeof params["count"] === "number" ? { n: params["count"] as number } : {}),
+      ...(typeof params["resolution"] === "string" && params["resolution"]
+        ? { resolution: params["resolution"] as string }
+        : {}),
+      ...(typeof params["aspectRatio"] === "string" && params["aspectRatio"]
+        ? { aspect_ratio: params["aspectRatio"] as string }
+        : {}),
+      ...(typeof params["quality"] === "string" && params["quality"]
+        ? { quality: params["quality"] as string }
+        : {}),
+      ...(typeof params["outputFormat"] === "string" && params["outputFormat"]
+        ? { output_format: params["outputFormat"] as string }
+        : {}),
+      ...(typeof params["seed"] === "number" ? { seed: params["seed"] as number } : {}),
+      ...(references ? { input_references: references } : {}),
+    });
+
+    const outputs: Array<{ key: string; mimeType: string; bytes: number }> = [];
+
+    for (const item of result.data ?? []) {
+      // Base64 is the documented shape. A `url` would mean OpenRouter started
+      // returning hosted assets, which is worth handling rather than crashing on
+      // — but it is not something this has been observed to do, so the message
+      // says so instead of pretending.
+      if (!item.b64_json) {
+        throw new Error(
+          "OpenRouter returned an image without base64 data. This app expects b64_json and does not yet handle a hosted URL.",
+        );
+      }
+
+      const mediaType = item.media_type ?? "image/png";
+      const bytes = Buffer.from(item.b64_json, "base64");
+      const stored = await storage.put(bytes, { contentType: mediaType, kind: "image" });
+      outputs.push({ key: stored.key, mimeType: stored.contentType, bytes: stored.bytes });
+    }
+
+    if (outputs.length === 0) {
+      throw new Error("OpenRouter reported success but returned no images.");
+    }
+
+    const totalBytes = outputs.reduce((n, o) => n + o.bytes, 0);
+
+    // Settle first. If the charge or refund fails, the row stays in `submitting`
+    // and `expireStaleJobs` refunds it — the alternative is marking it completed
+    // with credits still held, which is money the operator never gets back.
+    const actualUsd = result.usage?.cost != null ? result.usage.cost : null;
+    await settleGeneration({
+      userId: job.userId,
+      generationId: job.id,
+      heldMicro: job.creditsHeld,
+      actualUsd,
+      metadata: { model: job.model, images: outputs.length },
+    });
+
+    await db
+      .update(schema.generations)
+      .set({
+        status: "completed",
+        outputUrl: outputs[0].key,
+        outputs,
+        mimeType: outputs[0].mimeType,
+        bytes: totalBytes,
+        costActualMicro: actualUsd != null ? toMicro(actualUsd) : null,
+        creditsHeld: 0,
+        completedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.generations.id, job.id));
+
+    return "progressed";
+  } catch (e) {
+    await failJob(job, { message: e instanceof Error ? e.message : String(e), kind: "submit" });
+    return "progressed";
+  }
+}
+
+/**
+ * The prompt frozen at submit time, with a fallback for rows that predate it.
+ *
+ * Identical to the video path's fallback and for the same reason: a job from
+ * before `finalPrompt` existed, or one written by a migration that forgot to
+ * backfill, must still send something rather than an empty prompt.
+ */
+function finalPromptFor(job: GenerationRow): string {
+  const params = job.params as Record<string, unknown>;
+  if (typeof params["finalPrompt"] === "string" && params["finalPrompt"].trim()) {
+    return params["finalPrompt"] as string;
+  }
+  return assemblePrompt({
+    prompt: job.prompt,
+    enhancedPrompt: job.enhancedPrompt,
+    presetSlug: job.preset,
+    aspectRatio: (params["aspectRatio"] as string) ?? null,
+    resolution: (params["resolution"] as string) ?? null,
+    durationSeconds: null,
+    audio: null,
+  });
+}
+
+/**
+ * The video variant of `finalPromptFor`.
+ *
+ * Same frozen-prompt rule, but the fallback passes the video-only fields
+ * (`durationSeconds`, audio) so a pre-`finalPrompt` row reconstructs the prompt
+ * it would have had, rather than a video prompt with the duration omitted.
+ */
+function finalPromptForVideo(job: GenerationRow): string {
+  const params = job.params as Record<string, unknown>;
+  if (typeof params["finalPrompt"] === "string" && params["finalPrompt"].trim()) {
+    return params["finalPrompt"] as string;
+  }
+  return assemblePrompt({
+    prompt: job.prompt,
+    enhancedPrompt: job.enhancedPrompt,
+    presetSlug: job.preset,
+    aspectRatio: (params["aspectRatio"] as string) ?? null,
+    resolution: (params["resolution"] as string) ?? null,
+    durationSeconds: (params["durationSeconds"] as number) ?? null,
+    audio: (params["generateAudio"] as boolean) ?? null,
+  });
 }
 
 /** queued | submitting -> generating */
@@ -359,22 +757,9 @@ async function submitJob(job: GenerationRow): Promise<AdvanceResult> {
   const model = await getModelFor(job.model);
   const params = job.params as Record<string, unknown>;
 
-  // Use the prompt frozen at submit time. The fallback only fires for rows
-  // written before `finalPrompt` was stored, or by a future migration that
-  // forgot to backfill -- in both cases reproducing the prompt beats sending an
-  // empty one.
-  const finalPrompt =
-    typeof params["finalPrompt"] === "string" && params["finalPrompt"].trim()
-      ? (params["finalPrompt"] as string)
-      : assemblePrompt({
-          prompt: job.prompt,
-          enhancedPrompt: job.enhancedPrompt,
-          presetSlug: job.preset,
-          aspectRatio: (params["aspectRatio"] as string) ?? null,
-          resolution: (params["resolution"] as string) ?? null,
-          durationSeconds: (params["durationSeconds"] as number) ?? null,
-          audio: (params["generateAudio"] as boolean) ?? null,
-        });
+  // Use the prompt frozen at submit time. See `finalPromptFor` for why the
+  // fallback exists and why it is safe.
+  const finalPrompt = finalPromptForVideo(job);
 
   try {
     const callbackUrl = env.NEXT_PUBLIC_APP_URL
@@ -519,6 +904,9 @@ async function downloadJob(job: GenerationRow): Promise<AdvanceResult> {
       .set({
         status: "completed",
         outputUrl: stored.key,
+        // One output for a video, written to the same column image jobs use, so
+        // every reader of a generation's media has one place to look.
+        outputs: [{ key: stored.key, mimeType: stored.contentType, bytes: stored.bytes }],
         mimeType: stored.contentType,
         bytes: stored.bytes,
         creditsHeld: 0,

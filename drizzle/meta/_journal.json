@@ -8,6 +8,13 @@
       "when": 1790832151484,
       "tag": "0000_minor_meltdown",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1790835399615,
+      "tag": "0001_white_warbound",
+      "breakpoints": true
     }
   ]
 }

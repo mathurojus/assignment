@@ -17,3 +17,18 @@ export function createClient() {
   if (!isSupabaseConfigured()) return null;
   return createBrowserClient(env.NEXT_PUBLIC_SUPABASE_URL!, env.NEXT_PUBLIC_SUPABASE_ANON_KEY!);
 }
+
+/**
+ * Sign out and return home.
+ *
+ * Wrapped rather than inlined because `@supabase/ssr` writes the refreshed
+ * session cookies, and a client-side `signOut()` that races the navigation can
+ * leave a stale cookie behind -- which shows up as "signed out, but the header
+ * still says otherwise" on the next load. Awaiting it before navigating avoids
+ * that.
+ */
+export async function signOut(): Promise<void> {
+  const supabase = createClient();
+  if (!supabase) return;
+  await supabase.auth.signOut();
+}
