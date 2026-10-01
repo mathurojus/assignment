@@ -37,6 +37,16 @@ export interface RawImageEndpoint {
     { type: string; values?: string[]; min?: number; max?: number }
   > | null;
   supported_parameters_json?: unknown;
+  /**
+   * Provider-specific keys that may be passed straight through.
+   *
+   * Present on every live payload seen so far, and declared because a test
+   * fixture that reproduces a real response has to be able to include it. The
+   * pricing engine ignores it — passthrough keys are not prices, and a key
+   * appearing here says nothing about what a job costs.
+   */
+  allowed_passthrough_parameters?: string[];
+  supports_streaming?: boolean;
   pricing: RawImagePricingRow[] | null;
 }
 
@@ -105,7 +115,17 @@ export function megapixelsForResolution(resolution: string | null | undefined): 
 export function parseImagePricing(endpoints: RawImageEndpoint[]): ImagePricing {
   const outputRules: ImagePriceRule[] = [];
   let inputImage: number | undefined;
-  let tokenOnly = endpoints.length > 0;
+  /*
+   * Starts false and is only ever set by a per-token output row actually being seen.
+   *
+   * The tempting initial value is `endpoints.length > 0` — "if the model has
+   * endpoints but no quotable rule, it must be token-priced". That is wrong, and
+   * `krea/krea-2-large` is the counter-example: one endpoint, `pricing: []`,
+   * no token row anywhere. It reported "priced per token, token count not
+   * published" for a model whose price OpenRouter simply has not listed, which
+   * sends the reader looking for a token count that does not exist.
+   */
+  let tokenOnly = false;
 
   for (const endpoint of endpoints) {
     for (const row of endpoint.pricing ?? []) {
@@ -113,7 +133,26 @@ export function parseImagePricing(endpoints: RawImageEndpoint[]): ImagePricing {
       if (!["image", "megapixel", "token"].includes(unit)) continue;
 
       if (row.billable === "input_image") {
-        if (inputImage === undefined || row.cost_usd < inputImage) inputImage = row.cost_usd;
+        /*
+         * Only a flat per-image price is usable here.
+         *
+         * `usdPerInputImage` is multiplied by the reference count to produce a
+         * dollar amount, so a per-token input price cannot go into it. Storing one
+         * anyway — which is what this did — silently misprices image-to-image on
+         * every per-token model: `openai/gpt-image-2` publishes `input_image` at
+         * $0.000008 *per token*, and treating that as the price of a whole image
+         * undercharges by a factor of several hundred thousand, because the actual
+         * cost is tokens × $0.000008 and the token count is not knowable in
+         * advance.
+         *
+         * A per-token input price is therefore dropped, and the job falls into the
+         * same unquotable path as a per-token output price. Overcharging is not on
+         * the table either: the reference cost simply is not added to the quote,
+         * and the settle path reconciles against what was really billed.
+         */
+        if (unit === "image" && (inputImage === undefined || row.cost_usd < inputImage)) {
+          inputImage = row.cost_usd;
+        }
         continue;
       }
 
@@ -136,9 +175,8 @@ export function parseImagePricing(endpoints: RawImageEndpoint[]): ImagePricing {
     }
   }
 
-  // Cheapest first. `tokenOnly` above is cleared by any concrete row found, so a
-  // model with one per-token and one per-image endpoint is quotable via the
-  // per-image one.
+  // Cheapest first. `tokenOnly` is cleared by any concrete output rule, so a model
+  // with one per-token and one per-image endpoint is quotable via the per-image one.
   outputRules.sort((a, b) => a.costUsd - b.costUsd);
 
   return {
@@ -182,6 +220,27 @@ export function quoteImage(
 ): ImageQuote {
   const count = Math.max(1, Math.floor(input.count || 1));
 
+  /*
+   * The per-token case is checked before the no-pricing case, because both return
+   * `estimable: false` and the two reasons are different in a way the reader can
+   * act on. "Priced per token, token count not published" means the model is
+   * perfectly real and the price exists — it just cannot be known in advance.
+   * "No published price" means OpenRouter has not said what this costs at all,
+   * which is a different thing to be told and a different thing to trust.
+   *
+   * Order matters because a per-token model has `hasPricing: false`: there is no
+   * flat rule to quote from. Reporting it as "no published price" would be
+   * accurate in the narrowest sense and misleading in the way that matters.
+   */
+  if (pricing.tokenOnly) {
+    return {
+      estimable: false,
+      reason:
+        "This model is priced per token and OpenRouter does not publish the token count for an image, so the cost cannot be quoted up front. Credits are held and refunded against the amount actually billed.",
+      basis: "per-token pricing",
+    };
+  }
+
   if (!pricing.hasPricing) {
     return {
       estimable: false,
@@ -201,11 +260,14 @@ export function quoteImage(
     pricing.outputRules[0];
 
   if (!rule) {
+    // Unreachable for a per-token model, which is handled above. Reached when
+    // `hasPricing` is true because an input-image price exists but no output rule
+    // does — a real shape, so it gets a real message rather than a fallback.
     return {
       estimable: false,
       reason:
-        "This model is priced per token and OpenRouter does not publish the token count for an image, so the cost cannot be quoted up front. Credits are held and refunded against the amount actually billed.",
-      basis: "per-token pricing",
+        "This model publishes a price for input images but not for the images it produces, so the output cost cannot be quoted. Credits are held and refunded against the amount actually billed.",
+      basis: "no output price",
     };
   }
 

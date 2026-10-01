@@ -4,26 +4,32 @@ import { createServerClient } from "@supabase/ssr";
 /**
  * Session refresh.
  *
- * This file exists for one reason that no other file in the app can do: Supabase's
+ * Named `proxy.ts` rather than `middleware.ts`: Next.js 16 deprecated the middleware
+ * convention and renamed it to proxy, because the word "middleware" collides with
+ * the Express sense of the term and invites the wrong assumptions about where this
+ * code runs. Functionality is identical -- only the filename and the export name
+ * changed. See `node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/proxy.md`.
+ *
+ * This file exists for one reason no other file in the app can do: Supabase's
  * access token is a JWT with a short lifetime, and the only place a *response* can
- * legitimately write a cookie during a page load is the middleware. A Server
- * Component can read cookies but not set them, which means without this step the
- * refreshed token is discarded and the user is silently signed out roughly an hour
- * in, regardless of how long they intended to stay.
+ * legitimately write a cookie during a page load is here. A Server Component can
+ * read cookies but not set them, which means without this step the refreshed token
+ * is discarded and the user is silently signed out roughly an hour in, regardless
+ * of how long they intended to stay.
  *
  * The side effect is that auth is refreshed on every navigation, which is cheap --
  * `getUser()` here does a local JWT check and only reaches the network when the
  * token is actually expired.
  */
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   let response = NextResponse.next({ request });
 
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
   // Unconfigured is not an error. The app is designed to boot without auth so that
-  // `/setup` and the model list are reachable on a fresh clone; a middleware that
-  // threw here would take the entire site down instead.
+  // `/setup` and the model list are reachable on a fresh clone; a proxy that threw
+  // here would take the entire site down instead.
   if (!url || !anonKey) return response;
 
   const supabase = createServerClient(url, anonKey, {
