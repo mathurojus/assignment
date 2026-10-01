@@ -1,5 +1,5 @@
 import { desc, sql } from "drizzle-orm";
-import { requireDb, schema } from "@/lib/db";
+import { executeRows, requireDb, schema } from "@/lib/db";
 import { fromMicro, creditsMicroToDisplay } from "@/lib/openrouter/pricing";
 
 /**
@@ -28,13 +28,13 @@ export interface AdminTotals {
 export async function adminOverview(): Promise<AdminTotals> {
   const db = requireDb();
 
-  const statusRows = (await db.execute<{ status: string; count: number }>(sql`
+  const statusRows = await executeRows<{ status: string; count: number }>(sql`
     SELECT status, count(*)::int AS count
     FROM ${schema.generations}
     GROUP BY status
-  `)) as unknown as Array<{ status: string; count: number }>;
+  `);
 
-  const [money] = await db.execute<{ spent: string; held: string }>(sql`
+  const [money] = await executeRows<{ spent: string; held: string }>(sql`
     SELECT
       coalesce(sum(${schema.dailySpend.spentMicro}), 0)::bigint AS spent,
       coalesce((
@@ -46,7 +46,7 @@ export async function adminOverview(): Promise<AdminTotals> {
     WHERE ${schema.dailySpend.day} >= date_trunc('day', now())
   `);
 
-  const [userCount] = await db.execute<{ count: number }>(sql`
+  const [userCount] = await executeRows<{ count: number }>(sql`
     SELECT count(*)::int AS count FROM ${schema.users}
   `);
 

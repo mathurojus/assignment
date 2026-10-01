@@ -1,230 +1,59 @@
 import Link from "next/link";
-import { getSessionUser } from "@/lib/supabase/server";
-import { hasDatabase, hasOpenRouterKey } from "@/lib/env";
-import { listVideoModels, listImageModels } from "@/lib/openrouter/models";
-import { formatCredits } from "@/lib/format";
-import { presets } from "@/lib/presets";
 
-export const dynamic = "force-dynamic";
+const projects = [
+  ["The Tortoise and the Hare", "FILM · COMMUNITY"],
+  ["BESA", "CINEMA · AI FILM"],
+  ["Count of Three", "STORY · COMMUNITY"],
+  ["Detour", "SHORT FILM · AI"],
+];
 
-/**
- * `/`
- *
- * Every number on this page is live rather than written down in the copy. "30
- * text-to-video models" in a paragraph is a claim that starts rotting the week
- * OpenRouter adds one; a count rendered from the same call the dropdown uses is
- * correct whenever the page is. If the list cannot be reached, the page says so
- * instead of claiming a count it could not verify.
- */
-export default async function HomePage() {
-  let videoCount: number | null = null;
-  let imageCount: number | null = null;
+const effects = ["Floating fall", "High flip", "Burning man", "Studio slide", "Incline", "Act natural"];
 
-  try {
-    const [video, images] = await Promise.all([listVideoModels(), listImageModels()]);
-    videoCount = video.length;
-    imageCount = images.length;
-  } catch {
-    // Left null. The copy below handles that case explicitly.
-  }
-
-  let credits: string | null = null;
-  let signedIn = false;
-  if (hasDatabase) {
-    try {
-      const user = await getSessionUser();
-      if (user) {
-        signedIn = true;
-        credits = formatCredits(user.creditsMicro);
-      }
-    } catch {
-      // A database that is reachable but broken should not take the landing page
-      // down. The generate page will report the real error where it matters.
-    }
-  }
-
-  const ready = hasOpenRouterKey && hasDatabase;
-
+export default function HomePage() {
   return (
-    <div>
-      <section className="mx-auto max-w-7xl px-4 py-20 sm:px-6 sm:py-28">
-        <p className="font-mono text-xs uppercase tracking-[0.2em] text-[var(--color-ink-faint)]">
-          OpenRouter video + images
-        </p>
-        <h1 className="mt-4 max-w-3xl text-4xl font-semibold tracking-tight text-accent-gradient sm:text-5xl">
-          See the price before you spend it.
-        </h1>
-        <p className="mt-5 max-w-2xl text-lg leading-relaxed text-[var(--color-ink-muted)]">
-          Most generation apps show you the result and then what it cost. This one
-          quotes every job from the model&apos;s own pricing, holds exactly that from
-          your balance, and refunds the difference the moment OpenRouter reports the
-          real charge.
-        </p>
-
-        <div className="mt-8 flex flex-wrap items-center gap-3">
-          <PrimaryLink href={ready ? "/generate" : "/setup"}>
-            {ready ? "Start generating" : "Set up the app"}
-          </PrimaryLink>
-          <SecondaryLink href="/explore">Browse what people made</SecondaryLink>
+    <div className="hf-home">
+      <section className="hf-hero">
+        <div className="hf-hero-art" aria-hidden="true">
+          <div className="hf-orb hf-orb-one" />
+          <div className="hf-orb hf-orb-two" />
+          <div className="hf-hero-glow" />
         </div>
-
-        {signedIn && credits !== null ? (
-          <p className="mt-6 font-mono text-sm text-[var(--color-ink-muted)]">
-            You have {credits} credits.{" "}
-            <Link href="/gallery" className="underline underline-offset-2">
-              Your gallery
-            </Link>
-          </p>
-        ) : null}
-      </section>
-
-      {/* ------------------------------------------------------ how it works */}
-      <section className="border-y border-[var(--color-line)] bg-[var(--color-surface-sunken)]">
-        <div className="mx-auto max-w-7xl px-4 py-16 sm:px-6">
-          <h2 className="text-2xl font-semibold tracking-tight">
-            Three steps, and one of them is optional
-          </h2>
-          <div className="mt-8 grid gap-6 sm:grid-cols-3">
-            <Step
-              n="1"
-              title="Quote"
-              body="Pick a model and its parameters. The price comes from that model's live pricing, including the resolution and audio tier you chose — not from a table someone typed out months ago."
-            />
-            <Step
-              n="2"
-              title="Hold"
-              body="Submitting takes the quoted amount from your balance immediately, in one database transaction. You never get to run a job you cannot afford."
-            />
-            <Step
-              n="3"
-              title="Settle"
-              body="When OpenRouter reports what it actually billed, the difference is refunded — whether that is less than held, or, for a job whose cost could not be quoted, whatever is left over."
-            />
+        <div className="hf-hero-copy">
+          <span className="hf-eyebrow">YOUR AI CREATIVE STUDIO</span>
+          <h1>Make what<br />you <em> imagine.</em></h1>
+          <p>One creative studio for images, video, and everything in between.</p>
+          <div className="hf-actions">
+            <Link className="hf-button hf-button-light" href="/generate">Start creating <span>↗</span></Link>
+            <Link className="hf-button hf-button-quiet" href="/explore">Explore creations</Link>
           </div>
-          <p className="mt-6 text-sm text-[var(--color-ink-faint)]">
-            A ledger row is written for every movement, and the database refuses to let
-            one be edited or deleted afterwards.
-          </p>
+          <div className="hf-hero-note"><span className="hf-live-dot" /> A new era of visual storytelling</div>
+        </div>
+        <div className="hf-hero-caption"><span>01 / 04</span><span>GENJUTSU RESTYLE</span><span>Keep the motion. Change the world.</span></div>
+      </section>
+
+      <section className="hf-tools">
+        <div className="hf-section-head">
+          <div><span className="hf-eyebrow">YOUR IDEAS, IN MOTION</span><h2>Everything starts with a spark.</h2></div>
+          <Link href="/generate" className="hf-text-link">Open studio <span>↗</span></Link>
+        </div>
+        <div className="hf-tool-grid">
+          <Link href="/generate?type=image" className="hf-tool-card hf-image-card"><span className="hf-tool-index">01</span><div><span>IMAGE STUDIO</span><h3>Dream it.<br />See it.</h3><p>Turn a thought into a frame.</p></div><span className="hf-card-arrow">↗</span></Link>
+          <Link href="/generate?type=video" className="hf-tool-card hf-video-card"><video aria-hidden="true" autoPlay muted loop playsInline preload="metadata" poster="https://images.higgs.ai/?default=1&output=webp&url=https%3A%2F%2Fd2ol7oe51mr4n9.cloudfront.net%2Fuser_3HHoco5yVBrnJykveIPIqe1y4AP%2F35a6acb4-2e2e-46a6-bd4f-db622b57a38f.png&w=640&q=85"><source src="https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4" type="video/mp4" /></video><span className="hf-tool-index">02</span><div><span>VIDEO STUDIO</span><h3>Make every<br />frame move.</h3><p>Bring your ideas to life.</p></div><span className="hf-card-arrow">↗</span></Link>
+          <Link href="/generate" className="hf-tool-card hf-effects-card"><span className="hf-tool-index">03</span><div><span>CREATIVE EFFECTS</span><h3>Go beyond<br />the ordinary.</h3><p>Give your next idea a little magic.</p></div><span className="hf-card-arrow">↗</span></Link>
         </div>
       </section>
 
-      {/* ---------------------------------------------------------- numbers */}
-      <section className="mx-auto max-w-7xl px-4 py-16 sm:px-6">
-        <h2 className="text-2xl font-semibold tracking-tight">
-          What is actually available
-        </h2>
-        <dl className="mt-8 grid gap-6 sm:grid-cols-3">
-          <Stat
-            label="Text-to-video models"
-            value={videoCount === null ? "—" : String(videoCount)}
-            note={
-              videoCount === null
-                ? "Model list unreachable — no network, or OpenRouter is down."
-                : "Loaded live from OpenRouter just now. Video ZDR is unavailable, so prices are the ones OpenRouter shows."
-            }
-          />
-          <Stat
-            label="Image models"
-            value={imageCount === null ? "—" : String(imageCount)}
-            note={
-              imageCount === null
-                ? "Model list unreachable."
-                : "Any of them can produce several images in one job."
-            }
-          />
-          <Stat
-            label="Camera presets"
-            value={String(presets.length)}
-            note="Each one appends real photographic language to a prompt — focal length, film stock, lighting."
-          />
-        </dl>
+      <section className="hf-community">
+        <div className="hf-section-head"><div><span className="hf-eyebrow">MADE WITH HIGGSFIELD</span><h2>Stories worth a second look.</h2></div><Link href="/explore" className="hf-text-link">Explore all projects <span>↗</span></Link></div>
+        <div className="hf-project-grid">{projects.map(([title, label], i) => <Link href="/explore" className={`hf-project hf-project-${i + 1}`} key={title}><div className="hf-project-art"><span>H</span></div><div className="hf-project-meta"><div><h3>{title}</h3><span>{label}</span></div><span className="hf-card-arrow">↗</span></div></Link>)}</div>
       </section>
 
-      {/* ----------------------------------------------------------- honesty */}
-      <section className="mx-auto max-w-3xl px-4 pb-24 sm:px-6">
-        <div className="rounded-[var(--radius-card)] border border-[var(--color-line)] bg-[var(--color-surface)] p-6">
-          <h2 className="text-lg font-semibold tracking-tight">
-            What this app will not do
-          </h2>
-          <ul className="mt-4 space-y-3 text-sm leading-relaxed text-[var(--color-ink-muted)]">
-            <li>
-              <strong className="text-[var(--color-ink)]">It will not show a price it
-              cannot stand behind.</strong>{" "}
-              Some models are priced per token and OpenRouter publishes no token count
-              for an image or a video. Those get a stated reason and a held ceiling,
-              then a refund against what was actually billed — never a fabricated
-              estimate.
-            </li>
-            <li>
-              <strong className="text-[var(--color-ink)]">It will not edit the
-              ledger.</strong>{" "}
-              A Postgres trigger rejects any <code className="font-mono text-xs">UPDATE</code>{" "}
-              or <code className="font-mono text-xs">DELETE</code> on a credit movement,
-              so the history is an append-only record rather than a mutable balance.
-            </li>
-            <li>
-              <strong className="text-[var(--color-ink)]">It will not offer a model
-              that has been removed.</strong>{" "}
-              The list is loaded on the server per render, so a model withdrawn
-              upstream disappears from the dropdown rather than failing at submit.
-            </li>
-          </ul>
-        </div>
+      <section className="hf-effects">
+        <div className="hf-section-head"><div><span className="hf-eyebrow">A DIFFERENT POINT OF VIEW</span><h2>Big-screen energy. One click away.</h2></div><Link href="/generate" className="hf-text-link">Try a camera move <span>↗</span></Link></div>
+        <div className="hf-effect-list">{effects.map((effect, i) => <Link href="/generate" className={`hf-effect hf-effect-${i + 1}`} key={effect}><span className="hf-effect-num">0{i + 1}</span><span>{effect}</span><span>↗</span></Link>)}</div>
       </section>
+
+      <section className="hf-bottom"><span className="hf-eyebrow">THE NEXT FRAME IS YOURS</span><h2>Got an idea?<br /><em>Make it real.</em></h2><Link href="/generate" className="hf-button hf-button-light">Open the studio <span>↗</span></Link></section>
     </div>
-  );
-}
-
-function Step({ n, title, body }: { n: string; title: string; body: string }) {
-  return (
-    <div className="rounded-[var(--radius-card)] border border-[var(--color-line)] bg-[var(--color-surface)] p-5">
-      <span className="font-mono text-xs text-[var(--color-ink-faint)]">{n}</span>
-      <h3 className="mt-1 font-medium">{title}</h3>
-      <p className="mt-2 text-sm leading-relaxed text-[var(--color-ink-faint)]">{body}</p>
-    </div>
-  );
-}
-
-function Stat({
-  label,
-  value,
-  note,
-}: {
-  label: string;
-  value: string;
-  note: string;
-}) {
-  return (
-    <div>
-      <dt className="text-sm text-[var(--color-ink-faint)]">{label}</dt>
-      <dd className="mt-1 font-mono text-4xl tracking-tight text-[var(--color-ink)]">
-        {value}
-      </dd>
-      <dd className="mt-2 text-xs leading-relaxed text-[var(--color-ink-faint)]">
-        {note}
-      </dd>
-    </div>
-  );
-}
-
-function PrimaryLink({ href, children }: { href: string; children: React.ReactNode }) {
-  return (
-    <Link
-      href={href}
-      className="rounded-[var(--radius-control)] bg-[var(--color-ink)] px-5 py-2.5 text-sm font-medium text-[var(--color-canvas)] transition-opacity hover:opacity-90"
-    >
-      {children}
-    </Link>
-  );
-}
-
-function SecondaryLink({ href, children }: { href: string; children: React.ReactNode }) {
-  return (
-    <Link
-      href={href}
-      className="rounded-[var(--radius-control)] border border-[var(--color-line)] px-5 py-2.5 text-sm font-medium transition-colors hover:border-[var(--color-line-strong)] hover:bg-[var(--color-surface)]"
-    >
-      {children}
-    </Link>
   );
 }

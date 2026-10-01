@@ -1,4 +1,4 @@
-import { env, envProblems, features, hasDatabase, hasOpenRouterKey, hasSupabase } from "@/lib/env";
+import { env, envProblems, features, hasDatabase, hasOpenRouterKey } from "@/lib/env";
 
 /**
  * What this machine has configured, and what is therefore missing.
@@ -39,23 +39,23 @@ const CHECKS: SetupCheck[] = [
   },
   {
     key: "database",
-    label: "Postgres database",
+    label: "Local demo database",
     ok: hasDatabase,
     required: true,
     blocking: hasDatabase
       ? null
       : "Nothing can be stored, so nothing can be generated. Sign-in, gallery and credits all depend on it.",
-    where: "Supabase dashboard > Database > Connection string (use the pooler, not the direct connection)",
-    variable: "DATABASE_URL",
+    where: "Stored in .data/vantage",
+    variable: null,
   },
   {
     key: "auth",
-    label: "Sign-in",
-    ok: hasSupabase,
+    label: "Basic authentication",
+    ok: true,
     required: false,
-    blocking: hasSupabase ? null : "Sign-in is off. The app runs read-only.",
-    where: "Supabase dashboard > Project Settings > API",
-    variable: "NEXT_PUBLIC_SUPABASE_URL + NEXT_PUBLIC_SUPABASE_ANON_KEY",
+    blocking: null,
+    where: "Email and password accounts use the local demo database",
+    variable: null,
   },
   {
     key: "storage",

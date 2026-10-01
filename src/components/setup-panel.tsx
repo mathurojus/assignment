@@ -110,21 +110,11 @@ export function SetupPanel() {
               </p>
             </li>
             <li>
-              <p className="text-[var(--color-ink)]">
-                2. A Postgres connection string
-              </p>
+              <p className="text-[var(--color-ink)]">2. Local demo database</p>
               <p className="mt-1">
-                Create a free project at supabase.com, then take{" "}
-                <span className="text-[var(--color-ink)]">
-                  Database → Connection string
-                </span>
-                . Use the <strong>session pooler</strong> string (port 5432),
-                not the direct connection — serverless functions open many short
-                connections and the direct one will be closed on them. Add it as{" "}
-                <code className="rounded bg-[var(--color-surface-raised)] px-1.5 py-0.5 font-mono text-xs">
-                  DATABASE_URL
-                </code>
-                .
+                The app creates and updates its local database in{" "}
+                <code className="rounded bg-[var(--color-surface-raised)] px-1.5 py-0.5 font-mono text-xs">.data/vantage</code>.
+                No database account or connection string is needed.
               </p>
             </li>
             <li>
@@ -134,9 +124,7 @@ export function SetupPanel() {
                 <code className="rounded bg-[var(--color-surface-raised)] px-1.5 py-0.5 font-mono text-xs">
                   npm run db:push
                 </code>
-                . This applies the schema and the ledger immutability trigger.
-                Restart the dev server afterwards — environment variables are read
-                once at startup.
+                . Tables are also created automatically when the app starts.
               </p>
             </li>
           </ol>
@@ -219,3 +207,4 @@ function CheckRow({ check }: { check: SetupCheck }) {
     </div>
   );
 }
+

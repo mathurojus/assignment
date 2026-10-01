@@ -68,6 +68,7 @@ export const users = pgTable(
   {
     id: uuid("id").primaryKey(), // == Supabase auth user id
     email: text("email").notNull(),
+    passwordHash: text("password_hash"),
     name: text("name"),
     avatarUrl: text("avatar_url"),
 
@@ -88,6 +89,19 @@ export const users = pgTable(
     check("users_credits_non_negative", sql`${t.credits} >= 0`),
     index("users_created_at_idx").on(t.createdAt),
   ],
+);
+
+export const authSessions = pgTable(
+  "auth_sessions",
+  {
+    tokenHash: text("token_hash").primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("auth_sessions_user_id_idx").on(t.userId)],
 );
 
 export const generations = pgTable(

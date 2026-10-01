@@ -1,6 +1,10 @@
-import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
+import { PGlite } from "@electric-sql/pglite";
+import { drizzle as drizzlePglite } from "drizzle-orm/pglite";
+import { drizzle as drizzlePostgres, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
-import { env, hasDatabase } from "@/lib/env";
+import { sql, type SQL } from "drizzle-orm";
+import { resolve } from "node:path";
+import { env } from "@/lib/env";
 import * as schema from "./schema";
 
 /**
@@ -25,44 +29,44 @@ export type Database = PostgresJsDatabase<typeof schema>;
 const globalForDb = globalThis as unknown as { __vantageDb?: unknown };
 
 function create(): Database {
-  const client = postgres(env.DATABASE_URL!, {
-    // Supabase's pooler caps concurrent connections per client. Keep well under.
-    max: env.STORAGE_DRIVER === "supabase" ? 5 : 10,
-    idle_timeout: 20,
-    connect_timeout: 15,
-    // Keep the session cheap: we do our own timestamptz math.
-    prepare: false,
-    onnotice: () => {},
-  });
-  return drizzle(client, { schema, casing: "snake_case" });
+  if (env.DATABASE_URL) {
+    return drizzlePostgres(postgres(env.DATABASE_URL, { max: 1, idle_timeout: 20, prepare: false }), {
+      schema,
+      casing: "snake_case",
+    });
+  }
+
+  // ponytail: PGlite serializes one local connection; use hosted Postgres if demo traffic grows.
+  return drizzlePglite(new PGlite(resolve(process.env.VANTAGE_DB_PATH ?? ".data/vantage")), {
+    schema,
+    casing: "snake_case",
+  }) as unknown as Database;
 }
 
-export const db: Database | null = hasDatabase
-  ? ((globalForDb.__vantageDb as Database | undefined) ??= create())
-  : null;
+export const db: Database = (globalForDb.__vantageDb as Database | undefined) ??= create();
 
 export { schema };
 export * from "./schema";
 
 /**
  * Routes that need the database call this instead of touching `db` directly, so
- * a missing DATABASE_URL produces a message that says what to do rather than a
+ * a missing local database produces a message that says what to do rather than a
  * TypeError about a null connection.
  */
 export function requireDb(): Database {
-  if (!db) {
-    throw new DatabaseUnavailableError();
-  }
   return db;
+}
+
+export async function executeRows<T>(query: SQL): Promise<T[]> {
+  const result = await requireDb().execute(query);
+  return (Array.isArray(result) ? result : (result as { rows: T[] }).rows) as T[];
 }
 
 export class DatabaseUnavailableError extends Error {
   readonly code = "DATABASE_UNAVAILABLE";
   constructor() {
     super(
-      "DATABASE_URL is not set, so there is nowhere to store generations. " +
-        "Set it to your Supabase connection string (use the pooler, not the " +
-        "direct connection) and run `npm run db:push`.",
+      "The local demo database is unavailable. Restart the app to initialize it.",
     );
     this.name = "DatabaseUnavailableError";
   }

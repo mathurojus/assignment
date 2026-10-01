@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 import { env } from "@/lib/env";
+import { getLocalSessionUser } from "@/lib/auth/local";
 
 export function isSupabaseConfigured(): boolean {
   return Boolean(env.NEXT_PUBLIC_SUPABASE_URL && env.NEXT_PUBLIC_SUPABASE_ANON_KEY);
@@ -56,7 +57,7 @@ export interface SessionUser {
  */
 export async function getSessionUser(): Promise<SessionUser | null> {
   const supabase = await createClient();
-  if (!supabase) return null;
+  if (!supabase) return getLocalSessionUser();
 
   const { data, error } = await supabase.auth.getUser();
   const user = data.user;

@@ -16,6 +16,7 @@ export interface EnsureUserInput {
   email: string;
   name?: string | null;
   avatarUrl?: string | null;
+  passwordHash?: string | null;
 }
 
 export interface EnsureUserResult {
@@ -70,6 +71,7 @@ export async function ensureUser(input: EnsureUserInput): Promise<EnsureUserResu
       .values({
         id: input.id,
         email: input.email,
+        passwordHash: input.passwordHash ?? null,
         name: input.name ?? null,
         avatarUrl: input.avatarUrl ?? null,
         credits: startingCredits,

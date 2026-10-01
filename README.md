@@ -235,71 +235,32 @@ balance never goes negative.
 
 ---
 
-## Deploying to Vercel
+## Free demo deployment
 
-1. **Push the repo** to GitHub and import it at [vercel.com/new](https://vercel.com/new).
-   Framework and build settings are detected; leave them.
+Use Vercel Hobby for the app and a free Supabase project for durable Postgres and media storage. Local development still uses PGlite and local email/password accounts.
 
-2. **Add the two required environment variables** under
-   *Project Settings → Environment Variables*:
-
-   ```
-   OPENROUTER_API_KEY=sk-or-...
-   DATABASE_URL=postgresql://...?
-   ```
-
-   The `?` is `?sslmode=require` for Supabase. Use the **session pooler**
-   connection string (port 5432), not the direct one — the direct connection is
-   IPv6-only and will not connect from Vercel. Serverless functions open many
-   short-lived connections, which is exactly what the pooler is for.
-
-3. **Deploy.** It works with only those two set. Optional variables are listed
-   below.
-
-4. **Push the schema.** With `DATABASE_URL` exported locally:
-
-   ```bash
-   npm run db:push
-   ```
-
-   Vercel does not run migrations on build, and that is deliberate — a migration
-   that half-applies during a build leaves an inconsistent database behind.
-
-5. **Add auth** (optional, needed for sign-in and credits):
+1. Push this repo to GitHub, then import it at [vercel.com/new](https://vercel.com/new). `vercel.json` runs database migrations before the build.
+2. Create a free project at [supabase.com](https://supabase.com/). In Project Settings > Database, copy the Transaction pooler URI and set `DATABASE_URL` in Vercel. Keep `?sslmode=require`; each serverless instance uses one connection and disables prepared statements.
+3. Add these Vercel environment variables:
 
    ```
-   NEXT_PUBLIC_SUPABASE_URL=
-   NEXT_PUBLIC_SUPABASE_ANON_KEY=
-   SUPABASE_SERVICE_ROLE_KEY=
+   OPENROUTER_API_KEY=...
+   DATABASE_URL=...
+   NEXT_PUBLIC_SUPABASE_URL=...
+   SUPABASE_SERVICE_ROLE_KEY=...
    STORAGE_DRIVER=supabase
    ```
 
-6. **Secure the worker.** Set `CRON_SECRET` to a random string of at least 16
-   characters. Vercel then sends it as `Authorization: Bearer $CRON_SECRET` on
-   every cron invocation, which is what lets the tick route stay closed to the
-   public while still being drivable by cron.
+   The service-role key stays server-side. Local email/password authentication remains enabled when `NEXT_PUBLIC_SUPABASE_ANON_KEY` is blank. Supabase Storage creates the `vantage-media` bucket on first write.
+4. Set `PUBLIC_MEDIA_BASE_URL` and `NEXT_PUBLIC_APP_URL` to the deployed Vercel origin, then redeploy. Generation requires an OpenRouter key and may incur charges.
 
-### Free-tier constraints that shape this design
+Supabase Free includes 500 MB of database and 1 GB of file storage; inactive projects can pause. Vercel Hobby's scheduled cron runs daily, so active job progress relies primarily on the browser heartbeat.
+### Free-tier constraints
 
-| Limit | Consequence |
-|---|---|
-| Vercel Hobby cron runs **once per day**, ±59 min | The cron driver cannot be responsive. The browser heartbeat is the primary path; cron is a safety net for closed tabs. |
-| Function request **and response** body capped at 4.5 MB | Media is served as a `ReadableStream`, which is not buffered and so is not subject to the cap. Uploads are capped at 4 MB (`MAX_UPLOAD_MB`) rather than a number the platform would silently override with an unexplained 413. |
-| Hobby max duration 300 s | Comfortable. The tick route sets `maxDuration = 60`. |
-| Supabase free ≈ 1 GB storage + limited egress | Local-FS storage is the default. Video streaming is the dominant egress risk. |
-| **OpenRouter has no free tier for media** | See below. |
-
-`vercel.json` sets one thing: the daily cron. Everything else is in the route files.
-
-```json
-{ "crons": [{ "path": "/api/worker/tick", "schedule": "17 4 * * *" }] }
-```
-
-The minute is 17 rather than 0 — on Hobby, top-of-hour invocations cluster across
-accounts, and this spreads the load.
-
----
-
+- Vercel Hobby cron runs daily; the browser heartbeat advances active jobs.
+- Vercel function bodies are capped at 4.5 MB; uploads are capped at 4 MB.
+- Supabase Free provides 500 MB of database and 1 GB of file storage; inactive projects can pause.
+- OpenRouter generation can incur charges even when the hosting services are free.
 ## Environment variables
 
 **Everything is optional for the app to boot.** Only the first two are needed to
@@ -311,8 +272,8 @@ generate. Full table with comments in [`.env.example`](.env.example).
 | `DATABASE_URL` | — | **Required for credits, history, gallery.** |
 | `NEXT_PUBLIC_SITE_URL` | `http://localhost:3000` | Sent as `HTTP-Referer`. |
 | `NEXT_PUBLIC_APP_URL` | `http://localhost:3000` | Share links, OAuth redirects. |
-| `NEXT_PUBLIC_SUPABASE_URL` | — | Without it, sign-in is disabled. |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | — | Without it, sign-in is disabled. |
+| `NEXT_PUBLIC_SUPABASE_URL` | — | Supabase project URL; optional for local password auth. |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | — | Leave blank to use local password auth. |
 | `SUPABASE_SERVICE_ROLE_KEY` | — | Only for `STORAGE_DRIVER=supabase`. Bypasses RLS. |
 | `STORAGE_DRIVER` | `local` | `local` or `supabase`. Use `supabase` on Vercel — the filesystem is read-only there. |
 | `STORAGE_BUCKET` | `vantage-media` | Created on first write. |

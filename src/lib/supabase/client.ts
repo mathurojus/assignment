@@ -29,6 +29,14 @@ export function createClient() {
  */
 export async function signOut(): Promise<void> {
   const supabase = createClient();
-  if (!supabase) return;
+  if (!supabase) {
+    const response = await fetch("/api/auth/local", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "signout" }),
+    });
+    if (!response.ok) throw new Error("Could not sign out.");
+    return;
+  }
   await supabase.auth.signOut();
 }

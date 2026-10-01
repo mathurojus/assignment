@@ -24,6 +24,7 @@ Thumbs.db
 # Generated media lives outside the repo so a `git status` never wanders into a
 # 200MB video. Deploys set STORAGE_DRIVER=supabase and this path is unused.
 /storage/local/
+/.data/
 
 # --- Typescript --------------------------------------------------------------
 *.tsbuildinfo

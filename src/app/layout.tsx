@@ -16,14 +16,14 @@ import "./globals.css";
  */
 export const metadata: Metadata = {
   title: {
-    default: "Vantage",
-    template: "%s · Vantage",
+    default: "Higgsfield — AI Creative Studio",
+    template: "%s · Higgsfield",
   },
   description:
     "Generate video and images with 30 text-to-video and 55 image models behind one interface, priced in credits you control.",
   openGraph: {
-    title: "Vantage",
-    description: "Video and image generation, priced in credits you control.",
+    title: "Higgsfield — AI Creative Studio",
+    description: "Create images, video, and cinematic stories in one AI creative studio.",
     type: "website",
   },
 };
@@ -55,7 +55,7 @@ export default async function RootLayout({
 
   return (
     <html lang="en">
-      <body className="min-h-dvh antialiased">
+      <body className="min-h-dvh antialiased" suppressHydrationWarning>
         <a
           href="#main"
           className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50 focus:rounded-[var(--radius-control)] focus:bg-[var(--color-accent)] focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:text-[var(--color-accent-ink)]"
@@ -70,20 +70,23 @@ export default async function RootLayout({
           >
             <Link
               href="/"
-              className="mr-2 flex items-center gap-2 font-semibold tracking-tight"
+              className="mr-5 flex items-center gap-2 font-semibold tracking-tight"
             >
               <span
                 aria-hidden
-                className="grid size-7 place-items-center rounded-lg bg-[linear-gradient(135deg,var(--color-accent),var(--color-accent-violet))] text-sm font-bold text-[var(--color-accent-ink)]"
+                className="grid size-7 place-items-center rounded-full border border-white/30 text-sm font-semibold text-white"
               >
-                V
+                H
               </span>
-              <span className="text-accent-gradient hidden sm:inline">Vantage</span>
+              <span className="hidden sm:inline">HIGGSFIELD</span>
             </Link>
 
-            <NavLink href="/generate">Generate</NavLink>
-            <NavLink href="/gallery">Gallery</NavLink>
             <NavLink href="/explore">Explore</NavLink>
+            <NavLink href="/generate?type=image">Image</NavLink>
+            <NavLink href="/generate?type=video">Video</NavLink>
+            <NavLink href="/generate">Audio</NavLink>
+            <NavLink href="/explore">Effects</NavLink>
+            <NavLink href="/generate">Cinema Studio</NavLink>
             {user?.isAdmin ? <NavLink href="/admin">Admin</NavLink> : null}
 
             <div className="ml-auto flex items-center gap-2">
@@ -95,6 +98,7 @@ export default async function RootLayout({
                   >
                     {formatCredits(user.creditsMicro ?? 0)} credits
                   </span>
+                  <NavLink href="/gallery">My creations</NavLink>
                   <SignOutButton email={user.email} name={user.name} />
                 </>
               ) : (
@@ -102,7 +106,7 @@ export default async function RootLayout({
                   href="/login"
                   className="rounded-[var(--radius-control)] border border-[var(--color-line)] px-3 py-1.5 text-sm font-medium transition-colors hover:border-[var(--color-line-strong)] hover:bg-[var(--color-surface)]"
                 >
-                  Sign in
+                  Log in
                 </Link>
               )}
             </div>
@@ -120,10 +124,10 @@ export default async function RootLayout({
               </span>
               <span className="text-[var(--color-ink-muted)]">
                 {!hasOpenRouterKey && !hasDatabase
-                  ? "Add OPENROUTER_API_KEY and DATABASE_URL to .env.local, then restart the dev server."
+                  ? "Add OPENROUTER_API_KEY to .env.local, then restart the dev server."
                   : !hasOpenRouterKey
                     ? "Add OPENROUTER_API_KEY to .env.local to generate. The model list works without it."
-                    : "Add DATABASE_URL to .env.local, then run npm run db:push."}
+                    : "The local database is initializing. Restart the dev server."}
               </span>
               <Link
                 href="/setup"
@@ -139,13 +143,8 @@ export default async function RootLayout({
 
         <footer className="mt-24 border-t border-[var(--color-line)]">
           <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 px-4 py-8 text-sm text-[var(--color-ink-faint)] sm:px-6">
-            <p>
-              Vantage — generation and pricing are OpenRouter&apos;s. 1 credit =
-              $0.01.
-            </p>
-            <p className="font-mono text-xs">
-              Video output is the expensive part. Quote before you generate.
-            </p>
+            <p>HIGGSFIELD <span className="ml-2">A studio for your imagination.</span></p>
+            <p className="font-mono text-xs">IMAGE · VIDEO · IDEAS</p>
           </div>
         </footer>
       </body>

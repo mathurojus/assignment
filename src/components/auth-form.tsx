@@ -29,16 +29,7 @@ export function AuthForm({ mode }: { mode: "signin" | "signup" }) {
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
 
-  // Every hook above runs unconditionally. The guard for an unconfigured Supabase
-  // comes after them because a component that returns early before its hooks have
-  // all been called has a different hook order than one that does not -- which
-  // React surfaces as a crash the first time the reader signs in after fixing
-  // their env, rather than as anything resembling the real problem.
-  if (!configured) return <Unconfigured />;
-
-  // Narrowed into its own `const` after the guard, so the `submit` closure below
-  // sees a non-null type. Narrowing `configured` in place would not survive into
-  // a closure: the compiler cannot assume the narrowing still holds when called.
+  // Use the local account store when the optional Supabase provider is absent.
   const supabase = configured;
 
   if (done) {
@@ -78,6 +69,21 @@ export function AuthForm({ mode }: { mode: "signin" | "signup" }) {
 
     setBusy(true);
     try {
+      if (!supabase) {
+        const response = await fetch("/api/auth/local", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ action: mode, email, password }),
+        });
+        const result = await response.json();
+        if (!response.ok) {
+          setError(result.error ?? "Could not sign in. Try again.");
+          return;
+        }
+        window.location.assign(next());
+        return;
+      }
+
       if (mode === "signup") {
         const { error: signUpError } = await supabase.auth.signUp({ email, password });
         if (signUpError) {

@@ -134,6 +134,7 @@ export async function listVideoModels(opts: { fetchImpl?: FetchLike } = {}): Pro
   } catch (e) {
     // A stale cache beats no dropdown at all.
     if (cached) return cached.models;
+    console.error("[openrouter/models] video model list failed", e);
     throw new VideoModelsUnavailableError(e);
   }
 

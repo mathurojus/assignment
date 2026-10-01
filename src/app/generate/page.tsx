@@ -58,7 +58,7 @@ export default async function GeneratePage() {
           blockedReason: !hasOpenRouterKey
             ? "Add OPENROUTER_API_KEY to .env.local and restart the dev server."
             : !hasDatabase
-              ? "Add DATABASE_URL to .env.local, run npm run db:push, then restart."
+              ? "The local database is initializing. Restart the dev server."
               : null,
         }}
         limits={{

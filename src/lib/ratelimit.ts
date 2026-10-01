@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { requireDb, schema } from "./db";
+import { executeRows, requireDb, schema } from "./db";
 
 /**
  * Fixed-window counters for things that are not money.
@@ -63,7 +63,7 @@ export async function userRateBucket(
 
   const db = requireDb();
 
-  const [row] = await db.execute<{ count: number }>(sql`
+  const [row] = await executeRows<{ count: number }>(sql`
     INSERT INTO rate_limits (user_id, window_start, count)
     VALUES (${userId}::uuid, ${windowStart}, 1)
     ON CONFLICT (user_id, window_start)

@@ -63,7 +63,7 @@ const schema = z.object({
   // OpenRouter
   OPENROUTER_API_KEY: z.string().trim().optional().transform((v) => v || undefined),
 
-  // Database
+  // Optional hosted PostgreSQL for serverless deployments; local defaults to PGlite.
   DATABASE_URL: z.string().trim().optional().transform((v) => v || undefined),
 
   // Supabase (optional: local fallbacks exist for both auth and storage)
@@ -194,7 +194,7 @@ export function requireEnv<K extends keyof Env>(
 }
 
 export const hasOpenRouterKey = Boolean(env.OPENROUTER_API_KEY)
-export const hasDatabase = Boolean(env.DATABASE_URL)
+export const hasDatabase = true
 export const hasSupabase = Boolean(env.NEXT_PUBLIC_SUPABASE_URL && env.NEXT_PUBLIC_SUPABASE_ANON_KEY)
 export const hasSupabaseAdmin = Boolean(env.SUPABASE_SERVICE_ROLE_KEY)
 
@@ -205,7 +205,7 @@ export const canGenerate = hasOpenRouterKey && hasDatabase
 export const features = {
   openrouter: hasOpenRouterKey,
   database: hasDatabase,
-  auth: hasSupabase,
+  auth: true,
   storage: env.STORAGE_DRIVER === "supabase" ? hasSupabaseAdmin : true,
   /** OpenRouter's servers must be able to fetch our start frames. */
   publicMedia: Boolean(env.PUBLIC_MEDIA_BASE_URL),

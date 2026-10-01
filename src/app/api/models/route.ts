@@ -97,7 +97,7 @@ export async function GET() {
           blockedReason: !hasOpenRouterKey
             ? "Add OPENROUTER_API_KEY to .env.local to generate."
             : !features.database
-              ? "Add DATABASE_URL to .env.local to generate."
+              ? "The local demo database is unavailable."
               : null,
         },
       },

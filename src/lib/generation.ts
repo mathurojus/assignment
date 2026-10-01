@@ -1,5 +1,5 @@
 import { and, eq, inArray, lt, sql } from "drizzle-orm";
-import { requireDb, schema } from "./db";
+import { executeRows, requireDb, schema } from "./db";
 import { quote as priceQuote, toMicro, usdToCreditsMicro, type Quote } from "@/lib/openrouter/pricing";
 import { normaliseVideoModel, type RawVideoModel, type VideoModel } from "@/lib/openrouter/models";
 import { assemblePrompt } from "@/lib/prompt";
@@ -227,7 +227,7 @@ export async function createGeneration(
   input: CreateGenerationInput,
 ): Promise<CreateGenerationResult> {
   if (!hasDatabase) {
-    throw new NotConfiguredError("DATABASE_URL", "DATABASE_URL is not set, so generations cannot be stored.");
+    throw new NotConfiguredError("DATABASE", "The local demo database is unavailable.");
   }
   if (!isStorageReady()) {
     throw new NotConfiguredError("STORAGE_DRIVER", "Storage is not configured.");
@@ -971,7 +971,7 @@ export async function claimDueJobs(limit: number): Promise<string[]> {
   // `FOR UPDATE SKIP LOCKED` is the whole point: without SKIP, a second tick
   // blocks on the first's row locks, and on a serverless platform with a short
   // execution limit that shows up as a timeout rather than as duplicate work.
-  const rows = (await db.execute<{ id: string }>(sql`
+  const rows = await executeRows<{ id: string }>(sql`
     UPDATE ${schema.generations}
     SET next_poll_at = now() + interval '30 seconds'
     WHERE id IN (
@@ -984,7 +984,7 @@ export async function claimDueJobs(limit: number): Promise<string[]> {
       FOR UPDATE SKIP LOCKED
     )
     RETURNING id
-  `)) as unknown as { id: string }[];
+  `);
 
   return rows.map((r) => r.id);
 }
