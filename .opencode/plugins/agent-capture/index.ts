@@ -311,7 +311,10 @@ export default {
           if (event.data.finish === "tool-calls") continue
 
           // End of turn: read the authoritative text back off the transcript.
-          let text = ""
+          // Text parts are separate blocks (the model interleaves them with tool
+          // calls), so they are rejoined with a blank line. Concatenating them
+          // directly ran sentences together: "captured as a prompt.Log created".
+          const blocks: string[] = []
           let model = "unknown"
           try {
             const messages = await ctx.session.context({ sessionID })
@@ -327,11 +330,12 @@ export default {
               if (message?.type !== "assistant") continue
               model = modelName(message.model) || model
               for (const part of message.content ?? []) {
-                if (part?.type === "text" && typeof part.text === "string") text += part.text
+                if (part?.type === "text" && typeof part.text === "string") blocks.push(part.text)
               }
             }
           } catch {}
-          if (!text) text = state.buffer.join("")
+          if (blocks.length === 0) blocks.push(...state.buffer)
+          const text = blocks.join("\n\n")
           if (model !== "unknown") cachedModel = model
 
           state.entries.push({
