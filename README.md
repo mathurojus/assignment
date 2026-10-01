@@ -18,7 +18,7 @@ configuration is collected as readable strings and reported by `GET /api/setup`.
 
 ---
 
-[![Vantage Demo Video](https://img.youtube.com/vi/L5xl0W5eWb8/maxresdefault.jpg)](https://youtu.be/L5xl0W5eWb8)
+[![Vantage Demo Video](https://img.youtube.com/vi/TH8bVDXwyfM/maxresdefault.jpg)](https://youtu.be/TH8bVDXwyfM)
 
 ---
 
