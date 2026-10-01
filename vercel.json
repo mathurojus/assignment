@@ -1,0 +1,11 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
+
+  "crons": [
+    {
+      "path": "/api/worker/tick",
+      "schedule": "17 4 * * *"
+    }
+  ]
+}

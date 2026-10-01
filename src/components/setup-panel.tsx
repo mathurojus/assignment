@@ -97,10 +97,16 @@ export function SetupPanel() {
                 in <code className="font-mono text-xs">.env.local</code>.
               </p>
               <p className="mt-2 text-[var(--color-warn)]">
-                OpenRouter has no free tier — it bills against purchased credits.
-                The cheapest video models here cost fractions of a cent per
-                second, so a test generation is genuinely cheap, but the account
-                does need a balance before anything will run.
+                Generating still needs a paid balance. OpenRouter does have a
+                free tier — 50 requests a day on free text models, verified
+                against <code className="font-mono text-xs">/key</code> — but no
+                image or video model is free. All 11 image-output and 0
+                video-output models in the live catalogue bill real money, and a
+                free-tier key answers a generation request with{" "}
+                <code className="font-mono text-xs">402 Insufficient credits</code>
+                . The cheapest video models cost fractions of a cent per second,
+                so a test generation is genuinely cheap, but the account does need
+                credits first.
               </p>
             </li>
             <li>

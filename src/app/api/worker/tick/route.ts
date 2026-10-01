@@ -76,7 +76,7 @@ export async function POST(request: Request) {
       skipped: 0,
       expired,
       errors: 0,
-      authenticated: Boolean(env.WORKER_SECRET),
+      authenticated: Boolean(env.WORKER_SECRET || env.CRON_SECRET),
       jobs: [],
     };
 
@@ -109,21 +109,41 @@ export async function GET(request: Request) {
   return POST(request);
 }
 
+/*
+ * Two accepted credentials, because three drivers call this endpoint and each has
+ * a different one:
+ *
+ *   - `WORKER_SECRET`  — the local loop (`scripts/worker.mjs`) and the browser
+ *                        heartbeat, which can send any header.
+ *   - `CRON_SECRET`    — Vercel Cron. This is the platform's own convention: when
+ *                        the variable is set on the project, Vercel sends
+ *                        `Authorization: Bearer $CRON_SECRET` automatically.
+ *
+ * Accepting only `WORKER_SECRET` was a trap: it is the natural thing to set, and
+ * doing so would make every cron invocation fail 401 with nothing in the logs to
+ * say why. The deployment would look healthy and quietly stop advancing jobs.
+ *
+ * Only the constant-time comparison against each configured value. A Vercel cron
+ * request is not distinguishable by any header we can trust — `x-vercel-cron-schedule`
+ * is just a header anyone can send — so this is a real secret comparison, not a
+ * header-presence check.
+ */
 function isAuthorised(request: Request): boolean {
-  const secret = env.WORKER_SECRET;
-
-  // Unset means open. Documented, and reported in the response body so it is
-  // visible in the logs of a deployed instance that forgot to set it.
-  if (!secret) return true;
-
   const header = request.headers.get("authorization") ?? "";
   const token = header.startsWith("Bearer ") ? header.slice(7) : "";
-
   if (!token) return false;
 
-  // timingSafeEqual throws on a length mismatch, so compare lengths first.
   const a = Buffer.from(token);
-  const b = Buffer.from(secret);
-  if (a.length !== b.length) return false;
-  return timingSafeEqual(a, b);
+
+  for (const secret of [env.WORKER_SECRET, env.CRON_SECRET]) {
+    // Unset means that driver is not in use, not that it authorises everything.
+    if (!secret) continue;
+    // timingSafeEqual throws on a length mismatch, so compare lengths first.
+    const b = Buffer.from(secret);
+    if (a.length === b.length && timingSafeEqual(a, b)) return true;
+  }
+
+  // Neither configured: open. Documented, and reported in the response body so it
+  // is visible in the logs of a deployed instance that forgot to set one.
+  return !env.WORKER_SECRET && !env.CRON_SECRET;
 }

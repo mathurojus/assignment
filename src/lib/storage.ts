@@ -1,6 +1,7 @@
-import { promises as fs } from "node:fs";
+import { promises as fs, createReadStream } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { Readable } from "node:stream";
 import { env } from "@/lib/env";
 
 /**
@@ -113,6 +114,23 @@ const local = {
       return null;
     }
   },
+  /**
+   * A real stream, straight off the file descriptor.
+   *
+   * Not `Readable.toWeb(readFile(...))`, which would be a stream that is already
+   * a complete Buffer in memory wearing a stream costume.
+   */
+  async stream(key: string): Promise<ReadableStream<Uint8Array> | null> {
+    try {
+      const rs = createReadStream(resolveLocal(key));
+      // Node's `Readable` only emits an error event; `toWeb` will not turn that
+      // into a rejected read, so the error has to be forwarded by hand or a
+      // mid-read failure hangs the response instead of failing it.
+      return Readable.toWeb(rs) as ReadableStream<Uint8Array>;
+    } catch {
+      return null;
+    }
+  },
   async delete(key: string): Promise<void> {
     try {
       await fs.unlink(resolveLocal(key));
@@ -148,6 +166,19 @@ const supabase = {
     if (error || !data) return null;
     return Buffer.from(await data.arrayBuffer());
   },
+  /**
+   * Supabase hands back a `Blob`, which has a real `stream()`. The download still
+   * runs through REST, so this is a stream of an already-received Blob rather
+   * than a socket-level pipe -- but it is a stream, which is what the caller
+   * needs to keep the response off the buffered-payload path.
+   */
+  async stream(key: string): Promise<ReadableStream<Uint8Array> | null> {
+    const { getSupabaseAdmin } = await import("@/lib/supabase/admin");
+    const client = await getSupabaseAdmin();
+    const { data, error } = await client.storage.from(env.STORAGE_BUCKET).download(key);
+    if (error || !data) return null;
+    return data.stream() as ReadableStream<Uint8Array>;
+  },
   async delete(key: string): Promise<void> {
     const { getSupabaseAdmin } = await import("@/lib/supabase/admin");
     const client = await getSupabaseAdmin();
@@ -173,6 +204,15 @@ const supabase = {
 export interface Storage {
   put(data: Buffer | Uint8Array, opts: PutOptions): Promise<StoredObject>;
   get(key: string): Promise<Buffer | null>;
+  /**
+   * Open an object for streaming, or null when it is not there.
+   *
+   * Optional on the interface because a driver may not be able to: the local
+   * driver can stream a file, Supabase can stream a download, but a future
+   * driver backed by something that only yields bytes may not. Callers must
+   * check for `undefined` and fall back to `get`.
+   */
+  stream?(key: string): Promise<ReadableStream<Uint8Array> | null>;
   delete(key: string): Promise<void>;
   url(key: string): Promise<string>;
 }
@@ -248,6 +288,47 @@ export async function fetchObject(key: string): Promise<FetchedObject | null> {
 }
 
 /**
+ * The same object as a stream, with a byte count when one is cheaply available.
+ *
+ * Why this exists at all, since `fetchObject` looks sufficient:
+ *
+ * Vercel caps a function's request and response body at 4.5 MB. Returned as a
+ * `Buffer`, a 5-second video is already over that and the browser gets
+ * `413 FUNCTION_PAYLOAD_TOO_LARGE` -- which reads like a bug in the app and is
+ * actually a platform limit. Video is the main thing this app produces, so a
+ * buffered response means the app's central feature does not work on its target
+ * host.
+ *
+ * A `ReadableStream` body is not subject to that cap: the limit applies to
+ * payloads Vercel has to buffer, and a stream is handed to the client as it
+ * arrives. So the public media route streams.
+ *
+ * The byte count is optional and best-effort. It is used only to set
+ * `content-length`, and a missing one means the response is chunked, which is
+ * fine for a media element. Guessing it would be worse than omitting it: a
+ * `content-length` that disagrees with the body truncates or hangs the download.
+ */
+export async function fetchObjectStream(
+  key: string,
+): Promise<{ stream: ReadableStream<Uint8Array>; contentType: string; size?: number } | null> {
+  if (!storage.stream) return null;
+
+  const body = await storage.stream(key);
+  if (!body) return null;
+
+  let size: number | undefined;
+  try {
+    const stat = await fs.stat(resolveLocal(key));
+    if (stat.isFile()) size = stat.size;
+  } catch {
+    // Not the local driver, or the file vanished between open and stat. Both are
+    // fine: the response just goes out chunked.
+  }
+
+  return { stream: body, contentType: contentTypeForKey(key), ...(size !== undefined ? { size } : {}) };
+}
+
+/**
  * The content type to serve a stored object with.
  *
  * Derived from the key's extension, which is the same MIME table `put` used to
@@ -260,7 +341,14 @@ export function contentTypeForKey(key: string): string {
   const ext = key.includes(".") ? (key.split(".").pop() ?? "").toLowerCase() : "";
   if (!ext) return "application/octet-stream";
   for (const [mime, exts] of Object.entries(EXTENSIONS)) {
-    if (exts.includes(ext)) return mime;
+    // Compare with the leading dot re-attached. The table stores `[".mp4"]` and
+    // `ext` is `"mp4"`, and `Array.prototype.includes` is exact-match — so a
+    // dotless comparison never matches anything. That made this function return
+    // `application/octet-stream` for every single key, which combined with
+    // `nosniff` means the browser refuses to render a stored image at all and
+    // downloads a stored video instead of playing it. Every extension in the
+    // table was unreachable.
+    if (exts.includes(`.${ext}`)) return mime;
   }
   return "application/octet-stream";
 }

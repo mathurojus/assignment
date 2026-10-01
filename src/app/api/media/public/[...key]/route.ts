@@ -1,5 +1,5 @@
 import { notFound } from "next/navigation";
-import { fetchObject, contentTypeForKey } from "@/lib/storage";
+import { fetchObject, fetchObjectStream, contentTypeForKey } from "@/lib/storage";
 import { env } from "@/lib/env";
 
 /**
@@ -49,45 +49,79 @@ export async function GET(
 
   const key = segments.join("/");
 
-  let object: Awaited<ReturnType<typeof fetchObject>>;
+  /*
+   * Stream first, fall back to buffering.
+   *
+   * Vercel caps a function's response body at 4.5 MB. A 5-second video is over
+   * that, so a buffered `Response` makes the app's main output fail on its
+   * target host with `413 FUNCTION_PAYLOAD_TOO_LARGE` — which looks like an app
+   * bug and is a platform limit. A `ReadableStream` body is not buffered, so the
+   * cap does not apply.
+   *
+   * The fallback matters because `Storage.stream` is optional: a driver that can
+   * only produce bytes gets the buffered path and inherits the 4.5 MB ceiling on
+   * Vercel. Better a working route with a documented size limit than a 404.
+   */
+  /*
+   * Resolve to exactly one body, here, rather than leaving `streamed` and
+   * `object` as two variables that are assigned under different conditions.
+   * TypeScript cannot narrow `object` at the point of use when it is only
+   * assigned in the `if (!streamed)` branch, and forcing it would mean either a
+   * non-null assertion or a cast -- both of which hide the real shape.
+   */
+  let body: BodyInit;
+  let contentType: string;
+  let size: number | undefined;
+
   try {
-    object = await fetchObject(key);
+    const streamed = await fetchObjectStream(key);
+    if (streamed) {
+      body = streamed.stream;
+      contentType = streamed.contentType;
+      size = streamed.size;
+    } else {
+      const object = await fetchObject(key);
+      if (!object) notFound();
+      body = new Uint8Array(object.bytes);
+      contentType = object.contentType;
+      size = object.bytes.byteLength;
+    }
   } catch {
     // A storage backend that is down should not be a 500 with a stack trace in
     // the body — OpenRouter only ever sees the status line.
     return new Response("Storage unavailable", { status: 503 });
   }
 
-  if (!object) notFound();
+  if (!contentType) contentType = contentTypeForKey(key);
 
-  return new Response(new Uint8Array(object.bytes), {
-    headers: {
-      "content-type": object.contentType || contentTypeForKey(key),
-      "content-length": String(object.bytes.byteLength),
-      /*
-       * Immutable, and not `no-store`.
-       *
-       * Keys are content-unique random UUIDs that are never rewritten, so a
-       * generated output genuinely cannot change under a given URL. That makes a
-       * long cache correct rather than merely convenient — and it matters because
-       * a start frame is re-fetched by OpenRouter on every image-to-video job, so
-       * re-downloading it each time is a real cost.
-       *
-       * `private` would defeat the purpose (this is public by definition) and
-       * `no-store` would force the re-fetch. The 1-year max-age is what an
-       * immutable asset should get.
-       */
-      "cache-control": "public, max-age=31536000, immutable",
-      // Defence in depth against an SVG or HTML payload served from this origin.
-      // `nosniff` stops content-type sniffing, and the CSP denies scripts outright.
-      "x-content-type-options": "nosniff",
-      "content-security-policy": "default-src 'none'; sandbox",
-      "cross-origin-resource-policy": "cross-origin",
-      // Referrer omitted: the URL is a capability, and leaking it to a third-party
-      // page via a Referer header would hand that page a fetchable URL.
-      "referrer-policy": "no-referrer",
-    },
-  });
+  /*
+   * Immutable, and not `no-store`.
+   *
+   * Keys are content-unique random UUIDs that are never rewritten, so a generated
+   * output genuinely cannot change under a given URL. That makes a long cache
+   * correct rather than merely convenient — and it matters because a start frame
+   * is re-fetched by OpenRouter on every image-to-video job, so re-downloading it
+   * each time is a real cost.
+   *
+   * `private` would defeat the purpose (this is public by definition) and
+   * `no-store` would force the re-fetch. The 1-year max-age is what an immutable
+   * asset should get.
+   */
+  const headers: Record<string, string> = {
+    "content-type": contentType,
+    ...(size !== undefined ? { "content-length": String(size) } : {}),
+    "cache-control": "public, max-age=31536000, immutable",
+    // Defence in depth against an SVG or HTML payload served from this origin.
+    // `nosniff` stops content-type sniffing, and the CSP denies scripts outright.
+    "x-content-type-options": "nosniff",
+    "content-security-policy": "default-src 'none'; sandbox",
+    "cross-origin-resource-policy": "cross-origin",
+    // Referrer omitted: the URL is a capability, and leaking it to a third-party
+    // page via a Referer header would hand that page a fetchable URL.
+    "referrer-policy": "no-referrer",
+  };
+
+  return new Response(body, { headers });
 }
 
 /**

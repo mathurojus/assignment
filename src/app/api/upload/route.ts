@@ -1,4 +1,5 @@
 import { apiError, ok } from "@/lib/api";
+import { env } from "@/lib/env";
 import { getSessionUser } from "@/lib/supabase/server";
 import { storage, extensionForUpload, StorageError } from "@/lib/storage";
 
@@ -14,17 +15,23 @@ import { storage, extensionForUpload, StorageError } from "@/lib/storage";
 export const dynamic = "force-dynamic";
 
 /**
- * 32 MB.
+ * The cap, and why it is 4 MB rather than something comfortable.
  *
- * Sized for a 4K still, not for arbitrary uploads. A generated start frame is an
- * image, and the largest one any current model emits is a few megabytes; the
- * margin covers a phone photo at full resolution and nothing else.
+ * Vercel caps a function's **request** body at 4.5 MB. A 32 MB allowance here
+ * would therefore have been a limit the app advertises and the platform silently
+ * enforces first: the browser uploads 6 MB, gets `413 FUNCTION_PAYLOAD_TOO_LARGE`
+ * with no explanation, and the app's own message never runs. Worse, the failure
+ * would look like a bug rather than a limit, and only on Vercel.
  *
- * This is not a security control — a 32 MB body has already been buffered by the
- * time `formData()` returns. It is a resource limit, so a loop of 32 MB uploads
- * fails early and visibly instead of exhausting memory.
+ * 4 MB sits under the platform ceiling with room for multipart framing overhead,
+ * and is still generous for the actual use: the largest still any current model
+ * emits is a few megabytes.
+ *
+ * Raise it with `MAX_UPLOAD_MB` when self-hosting behind something with a larger
+ * body limit. Raising it on Vercel buys nothing.
  */
-const MAX_BYTES = 32 * 1024 * 1024;
+const MAX_MB = env.MAX_UPLOAD_MB;
+const MAX_BYTES = MAX_MB * 1024 * 1024;
 
 /**
  * Only formats a model can actually accept as an input image.
@@ -67,7 +74,7 @@ export async function POST(request: Request) {
   if (file.size > MAX_BYTES) {
     return apiError(
       "validation_failed",
-      `That file is ${(file.size / 1024 / 1024).toFixed(1)} MB. The limit is 32 MB — a 4K photo is well under it, so the file is probably a video.`,
+      `That file is ${(file.size / 1024 / 1024).toFixed(1)} MB. The limit is ${MAX_MB} MB - a 4K photo is well under it, so the file is probably a video.`,
     );
   }
 

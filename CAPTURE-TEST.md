@@ -56,6 +56,34 @@ payloads is kept only as a fallback if that read fails.
 Reasoning parts, tool calls, tool results, file reads, diffs, retries, and subagent sessions
 (filtered on `Session.Info.parentID`). Only the prompt and the model's own output text are kept.
 
+### One exception to "verbatim": credentials are redacted
+
+The plugin captures prompts verbatim, with one deliberate exception. `.agent-logs/` is
+**committed to git**, so anything written here is published. A user who pastes an API key to
+configure something would otherwise put that key into permanent git history, where it survives
+every later rotation of whatever it unlocks.
+
+That is not hypothetical. An OpenRouter key pasted into chat during development landed in a
+committed log file. Two changes came out of it:
+
+1. **A redaction table** in `.opencode/plugins/agent-capture/index.ts`, applied to both the
+   prompt half and the response half — a response can leak a secret the user never typed, via a
+   tool result or a diff. It covers OpenRouter, OpenAI, Supabase (anon/service JWTs and
+   `sb_*` keys), AWS access key ids, GitHub tokens, Google API keys, Slack tokens, PEM private
+   key blocks, Postgres/MySQL URLs with inline passwords, and `KEY=value` assignments where the
+   name looks like a credential. Replaced text becomes `[REDACTED:<kind>]`.
+
+2. **The scrubbed key was removed from the log by hand**, once, and this entry is the record of
+   that. It is the only hand-edit to an entry body, and it is disclosed here rather than left
+   silent. The marker in the file now reads `[REDACTED:openrouter-api-key]`, which is exactly
+   what the plugin emits.
+
+Patterns are deliberately narrow — fixed prefix, fixed shape. A loose pattern would redact half
+the repository and make the logs useless as evidence, which is its own way of losing
+information. `tests/capture-redaction.test.ts` covers the table in both directions: a
+key-shaped string is redacted, a sentence *about* the key format is left alone, and one test
+scans every tracked log file for a live-shaped key so this cannot regress silently.
+
 ### Three judgement calls, stated plainly
 
 1. **"The final response" = all assistant text across the turn**, concatenated in order — not just

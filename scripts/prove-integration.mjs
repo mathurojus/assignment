@@ -170,30 +170,46 @@ async function main() {
   let videoModels = [];
   let imageModels = [];
 
-  try {
-    const { body } = await orFetch("/videos");
-    videoModels = body?.data ?? [];
-    check(
-      "GET /videos returns a model list",
-      Array.isArray(videoModels) && videoModels.length > 0,
-      `${videoModels.length} models`,
-    );
-  } catch (e) {
-    await fail("GET /videos", e);
-  }
-
+  /*
+   * Only fetch the lists this mode will actually use.
+   *
+   * This was the reverse: the video list was fetched unconditionally and the
+   * image list skipped under `--image-only`. So asking for an image proof spent
+   * a request on video discovery, could die there, and never reached images --
+   * the one thing that mode exists to check.
+   */
   if (!IMAGE_ONLY) {
     try {
-      const { body } = await orFetch("/images/models");
-      imageModels = body?.data ?? [];
+      // `/videos/models`, not `/videos`. The published documentation says the
+      // model list is at `GET /api/v1/videos`; the live API answers that with
+      // 404 and keeps the list under `/videos/models`. `POST /api/v1/videos`
+      // is the submit endpoint, which is what the docs appear to have been
+      // describing. Same family of mistake as the pricing_skus shape -- the docs
+      // are not wrong about the resource, they are wrong about the read.
+      const { body } = await orFetch("/videos/models");
+      videoModels = body?.data ?? [];
       check(
-        "GET /images/models returns a model list",
-        Array.isArray(imageModels) && imageModels.length > 0,
-        `${imageModels.length} models`,
+        "GET /videos/models returns a model list",
+        Array.isArray(videoModels) && videoModels.length > 0,
+        `${videoModels.length} models`,
       );
     } catch (e) {
-      await fail("GET /images/models", e);
+      await fail("GET /videos/models", e);
     }
+  }
+
+  // Unconditional: the image list is needed in both modes. Even a video proof
+  // prints the image quote, and the base64 check further down runs either way.
+  try {
+    const { body } = await orFetch("/images/models");
+    imageModels = body?.data ?? [];
+    check(
+      "GET /images/models returns a model list",
+      Array.isArray(imageModels) && imageModels.length > 0,
+      `${imageModels.length} models`,
+    );
+  } catch (e) {
+    await fail("GET /images/models", e);
   }
 
   /* ------------------------------- 2. price the run before spending on it */
@@ -333,12 +349,39 @@ function pickImageModel(models, wanted) {
     return m ? { id: m.id, name: m.name, estimateUsd: null, unquotable: true } : null;
   }
 
-  // Text-only models are excluded: `architecture.output_modalities` is the only
-  // reliable signal, and a model that cannot emit images returns a 400 that looks
-  // like a bad prompt.
-  const usable = models.filter(
-    (m) => m.architecture?.output_modalities?.includes("image") === true,
-  );
+  /*
+   * Text-only models are excluded: `architecture.output_modalities` is the only
+   * reliable signal, and a model that cannot emit images returns a 400 that looks
+   * like a bad prompt.
+   *
+   * That is not sufficient, and taking `usable[0]` picked
+   * `inclusionai/ming-image-0.1-design-layer`, which advertises
+   * `input_references: {min: 1, max: 1}` -- it cannot run without an input image.
+   * Submitting a prompt alone produced:
+   *
+   *   No provider for inclusionai/ming-image-0.1-design-layer supports the
+   *   requested parameter(s): n "1". Provider rejections: Novita:
+   *   input_references: must have exactly 1 items
+   *
+   * which blames `n` when the actual complaint is the missing reference. Read
+   * literally it sends you to debug the wrong parameter.
+   *
+   * So two more conditions, both from `supported_parameters` on the list payload:
+   * the model must accept zero input references (min 0, or undeclared), and it
+   * must accept an `n`. Sorted by id so the chosen model is stable between runs
+   * instead of depending on list order.
+   */
+  const usable = models.filter((m) => {
+    if (m.architecture?.output_modalities?.includes("image") !== true) return false;
+    const params = m.supported_parameters ?? {};
+    const refs = params.input_references;
+    if (refs && typeof refs.min === "number" && refs.min > 0) return false;
+    const n = params.n;
+    if (n && typeof n.max === "number" && n.max < 1) return false;
+    return true;
+  });
+
+  usable.sort((a, b) => String(a.id).localeCompare(String(b.id)));
   const m = usable[0];
   return m ? { id: m.id, name: m.name, estimateUsd: null, unquotable: true } : null;
 }

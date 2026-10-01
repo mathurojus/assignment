@@ -95,6 +95,12 @@ const schema = z.object({
 
   // Worker
   WORKER_SECRET: z.string().trim().optional().transform((v) => v || undefined),
+  // Vercel Cron. When set on a Vercel project, the platform sends
+  // `Authorization: Bearer $CRON_SECRET` on every cron invocation, which is what
+  // lets the tick route stay closed while still being driven by cron. Separate
+  // from WORKER_SECRET because the local worker and the browser heartbeat send
+  // that one instead.
+  CRON_SECRET: z.string().trim().optional().transform((v) => v || undefined),
   WORKER_BATCH_SIZE: int(5),
   JOB_MAX_AGE_MINUTES: int(30),
 
@@ -102,8 +108,31 @@ const schema = z.object({
   RATE_LIMIT_JOBS_PER_HOUR: int(10),
   MAX_CONCURRENT_JOBS_PER_USER: int(2),
 
+  // Uploads
+  //
+  // 4 MB, not 32, because Vercel rejects a request body over 4.5 MB before this
+  // code runs — so a higher number here is a limit the app advertises and the
+  // platform silently overrides with an unexplained 413. Raise it only when
+  // self-hosting behind something with a larger ceiling.
+  MAX_UPLOAD_MB: int(4),
+
   // Enhancer
-  ENHANCER_MODEL: z.string().trim().default("openai/gpt-4o-mini"),
+  //
+  // Defaults to a `:free` model rather than the more capable
+  // `openai/gpt-4o-mini`, because the brief is explicit that everything runs on
+  // free tiers and enhancement is the one place that can honour it: rewriting a
+  // prompt is a text task, and OpenRouter's free tier covers text (50 requests a
+  // day on free models, confirmed live against `GET /api/v1/key`).
+  //
+  // The trade is rewrite quality, and it is a real one -- set this to
+  // `openai/gpt-4o-mini` if you are already paying for image generation and want
+  // the better prose. Enhancement is optional either way: a failure returns the
+  // user's original prompt, it never blocks a generation.
+  //
+  // Any `:free` model works; the catalogue currently lists 20. This one was
+  // chosen because it answered a real request (see the README's verification
+  // table), not because it is the best of the twenty.
+  ENHANCER_MODEL: z.string().trim().default("google/gemma-4-31b-it:free"),
 
   // Webhooks
   OPENROUTER_WEBHOOK_SECRET: z

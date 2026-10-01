@@ -96,6 +96,63 @@ function stamp(d: Date): { iso: string; date: string; time: string } {
   return { iso, date: iso.slice(0, 10), time: iso.slice(11, 19).replaceAll(":", "-") }
 }
 
+/**
+ * Redact credentials before they reach a committed file.
+ *
+ * This log directory is committed to git on purpose, so anything written here is
+ * published. That makes "capture the prompt verbatim" a genuine hazard rather
+ * than a neutral instruction: a user who pastes an API key to configure something
+ * would otherwise have that key in permanent git history, where it survives every
+ * later rotation of the thing it unlocks.
+ *
+ * This is a real occurrence, not a hypothetical. An OpenRouter key pasted into
+ * chat landed in a committed log file, and the fix is here rather than in a
+ * "remember not to do that" note.
+ *
+ * Deliberately narrow: these are formats with a distinctive fixed prefix and a
+ * fixed shape, so ordinary prose and code are not touched. A loose pattern would
+ * redact half the repository and make the logs useless, which is its own way of
+ * losing information.
+ *
+ * Applied to both prompts and responses, since a model can echo a secret back --
+ * a tool result containing a key, or a diff that includes one.
+ */
+const REDACTIONS: Array<[RegExp, string]> = [
+  // OpenRouter
+  [/sk-or-v1-[0-9a-f]{64}/gi, "[REDACTED:openrouter-api-key]"],
+  // OpenAI
+  [/\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}/g, "[REDACTED:openai-api-key]"],
+  // Supabase: anon/service role JWTs and the publishable/secret pairs
+  [/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, "[REDACTED:jwt]"],
+  [/sb_(?:publishable|secret)_[A-Za-z0-9_-]{20,}/g, "[REDACTED:supabase-key]"],
+  // AWS access key id
+  [/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, "[REDACTED:aws-access-key-id]"],
+  // GitHub tokens
+  [/\bgh[pousr]_[A-Za-z0-9]{36,}/g, "[REDACTED:github-token]"],
+  // Google API key
+  [/\bAIza[0-9A-Za-z_-]{35}\b/g, "[REDACTED:google-api-key]"],
+  // Slack
+  [/\bxox[abposr]-[A-Za-z0-9-]{10,}/g, "[REDACTED:slack-token]"],
+  // Private key blocks, in any pasted PEM
+  [
+    /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
+    "[REDACTED:private-key]",
+  ],
+  // Postgres / MySQL URLs with an inline password
+  [/\b(postgres(?:ql)?|mysql):\/\/([^:@\s/]+):([^@\s/]+)@/gi, "$1://$2:[REDACTED]@"],
+  // `KEY=value` / `KEY: value` for names that are obviously credentials
+  [
+    /\b([A-Z0-9_]*(?:API_?KEY|SECRET|PASSWORD|TOKEN|ACCESS_?KEY)[A-Z0-9_]*)\s*[:=]\s*["']?([^\s"',;]{8,})["']?/gi,
+    "$1=[REDACTED]",
+  ],
+]
+
+function redact(text: string): string {
+  let out = text
+  for (const [pattern, replacement] of REDACTIONS) out = out.replace(pattern, replacement)
+  return out
+}
+
 function render(state: State): string {
   const { date } = stamp(new Date(state.firstPromptAt))
   const last = state.lastPromptAt || state.firstPromptAt
@@ -128,7 +185,7 @@ function render(state: State): string {
         `model: ${e.model}`,
         "",
       ].join("\n")
-      return `${head}\n${e.text}\n`
+      return `${head}\n${redact(e.text)}\n`
     })
     .join("\n")
 
@@ -269,8 +326,11 @@ export default {
         num: state.exchanges,
         timestamp: now,
         model: await resolveModel(info),
-        // verbatim, untruncated, unedited
-        text: event?.prompt?.text ?? "",
+        // Verbatim and untruncated, except for credentials. These logs are
+        // committed, so "verbatim" has to mean "faithful" rather than "byte
+        // identical"; a key pasted to configure the app must not become permanent
+        // git history. See REDACTIONS.
+        text: redact(event?.prompt?.text ?? ""),
       })
       persist(state)
     })
@@ -324,7 +384,10 @@ export default {
             }
           } catch {}
           if (blocks.length === 0) blocks.push(...state.buffer)
-          const text = blocks.join("\n\n")
+          // Same redaction as the prompt half. A response can carry a secret
+          // without the user typing one — a tool result echoing a token, a diff
+          // touching an env file, a stack trace with a connection string.
+          const text = redact(blocks.join("\n\n"))
           if (model !== "unknown") cachedModel = model
 
           // Attribute the response to the most recent prompt that has no response
