@@ -148,8 +148,14 @@ export class StorageUnavailableError extends Error {
  * handlers are async closures over their own `request`, so there is nothing to
  * pass in, and `T extends unknown[]` would have to be instantiated at each call
  * site for no benefit.
+ *
+ * Typed against `Response`, not `NextResponse`. A Next route handler may return
+ * any `Response`, and handlers that stream bytes or set uncommon headers use the
+ * plain constructor because `NextResponse.json` does not cover those cases.
+ * Typing this as `NextResponse` would force every handler to pick one, which is
+ * a constraint with no benefit.
  */
-export async function route(handler: () => Promise<NextResponse>): Promise<NextResponse> {
+export async function route(handler: () => Promise<Response>): Promise<Response> {
   try {
     return await handler();
   } catch (error) {

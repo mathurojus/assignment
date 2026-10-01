@@ -57,6 +57,8 @@ export interface CreateGenerationInput {
     hasFirstFrame?: boolean;
   };
   sourceImageKey?: string | null;
+  /** Whether this job may appear in the public explore feed. */
+  isPublic?: boolean;
 }
 
 /**
@@ -236,6 +238,7 @@ export async function createGeneration(
       },
       status: "queued",
       sourceImageUrl: input.sourceImageKey ?? null,
+      isPublic: input.isPublic ?? false,
       costEstimateMicro: toMicro(estimate.estimable ? estimate.costUsd : env.CREDIT_RESERVE_CEILING_USD),
       nextPollAt: new Date(),
     })
